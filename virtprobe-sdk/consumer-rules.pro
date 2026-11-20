@@ -1,0 +1,6 @@
+-keep class io.virtprobe.sdk.native.NativeBridge { *; }
+-keep class io.virtprobe.sdk.VirtProbe { *; }
+-keep class io.virtprobe.sdk.VirtProbeConfig { *; }
+-keep class io.virtprobe.sdk.input.VirtProbeWindowCallback { *; }
+-keep class io.virtprobe.sdk.input.InputEventMonitor { *; }
+-keep class io.virtprobe.core.model.** { *; }

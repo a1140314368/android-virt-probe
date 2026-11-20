@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!--
+      包可见性：只声明本 SDK 会按名查询的模拟器、分身和自动化包。
+      查不到不等于异常，规则层会把「未安装」记成未命中。
+    -->
+    <queries>
+        <package android:name="com.bluestacks" />
+        <package android:name="com.bluestacks.appmart" />
+        <package android:name="com.bignox.app" />
+        <package android:name="com.vphone.launcher" />
+        <package android:name="com.microvirt.launcher" />
+        <package android:name="com.mumu.store" />
+        <package android:name="com.genymotion.superuser" />
+        <package android:name="com.ldmnq.launcher3" />
+        <package android:name="com.lbe.parallel" />
+        <package android:name="com.lbe.parallel.intl" />
+        <package android:name="com.excelliance.dualaid" />
+        <package android:name="com.lody.virtual" />
+        <package android:name="io.virtualapp" />
+        <package android:name="io.va.exposed" />
+        <package android:name="top.niunaijun.blackbox" />
+        <package android:name="com.vmos.pro" />
+        <package android:name="com.qihoo.magic" />
+        <package android:name="io.appium.uiautomator2.server" />
+        <package android:name="org.autojs.autojs" />
+        <package android:name="com.cyjh.mobileanjian" />
+        <package android:name="net.dinglisch.android.taskerm" />
+    </queries>
+</manifest>
