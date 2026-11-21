@@ -108,6 +108,35 @@ class RuntimeRulesTest {
         assertTrue(RuntimeRules.mapMarkers("/data/local/tmp/re.frida.server/frida-agent-64.so").contains("frida-agent"))
         assertTrue(RuntimeRules.mapMarkers("callspd helper").isEmpty())
         assertTrue(RuntimeRules.mapMarkers("library fridahelper.so").isEmpty())
+        assertEquals(listOf("frida-zymbiote"), RuntimeRules.unixMarkers("@/frida-zymbiote-abc"))
+        assertTrue(RuntimeRules.unixMarkers("frida-helper").isEmpty())
+    }
+
+    @Test
+    fun unixTableDeniedIsUnknownNotClear() {
+        val finding = RuntimeRules.evaluate(
+            realRuntimeSnapshot().copy(
+                mapsState = ProbeVisibility.PRESENT,
+                unixState = ProbeVisibility.DENIED,
+            ),
+        ).single { it.signalId == "rt.maps.inject" }
+        assertFalse(finding.detected)
+        assertEquals("无法检查", finding.summaryZh)
+        assertTrue(finding.observedDataZh.contains("套接字表不可读"))
+        assertTrue(finding.recommendationZh.contains("未知"))
+    }
+
+    @Test
+    fun fridaZymbioteSocketIsAClue() {
+        val finding = RuntimeRules.evaluate(
+            realRuntimeSnapshot().copy(
+                mapsState = ProbeVisibility.PRESENT,
+                unixState = ProbeVisibility.PRESENT,
+                unixHits = listOf("frida-zymbiote"),
+            ),
+        ).single { it.signalId == "rt.maps.inject" }
+        assertTrue(finding.detected)
+        assertTrue(finding.observedDataZh.contains("frida-zymbiote"))
     }
 
     @Test

@@ -43,6 +43,15 @@ object RuntimeRules {
         return keys.filter { lower.contains(it) }
     }
 
+    /**
+     * Frida 17 的抽象套接字前缀。两次启动后缀不同，前缀稳定。
+     * 不匹配裸词 frida，避免把无关套接字名当成注入。
+     */
+    fun unixMarkers(text: String): List<String> {
+        if (text.isBlank()) return emptyList()
+        return if (text.lowercase().contains("frida-zymbiote")) listOf("frida-zymbiote") else emptyList()
+    }
+
     fun evaluate(snapshot: RuntimeSnapshot): List<SignalFinding> = listOf(
         suPaths(snapshot),
         mounts(snapshot),
@@ -112,8 +121,12 @@ object RuntimeRules {
     }
 
     private fun injectedMaps(snapshot: RuntimeSnapshot): SignalFinding {
-        val unknown = snapshot.mapsState == ProbeVisibility.DENIED
-        val hit = snapshot.mapHits.isNotEmpty()
+        val mapHit = snapshot.mapHits.isNotEmpty()
+        val unixHit = snapshot.unixHits.isNotEmpty()
+        val hit = mapHit || unixHit
+        val mapsDenied = snapshot.mapsState == ProbeVisibility.DENIED
+        val unixDenied = snapshot.unixState == ProbeVisibility.DENIED
+        val unknown = !hit && (mapsDenied || unixDenied)
         return finding(
             signalId = "rt.maps.inject",
             category = category,
@@ -127,13 +140,26 @@ object RuntimeRules {
                 else -> "未看到已知注入库"
             },
             observedDataZh = when {
-                hit -> snapshot.mapHits.joinToString("、")
-                unknown -> "maps 被拒绝"
-                else -> "maps 可读，无 frida/zygisk/xposed/riru 字样"
+                hit -> (snapshot.mapHits + snapshot.unixHits).joinToString("、")
+                mapsDenied && unixDenied -> "maps 与套接字表都被拒绝"
+                mapsDenied -> "maps 被拒绝"
+                unixDenied -> "maps 可读，无库名。套接字表不可读"
+                else -> "maps 与套接字表可读，无已知注入名"
             },
-            expectedBaselineZh = "普通进程 maps 不含 frida-gadget、zygisk、libxposed。名称可被改掉。",
-            recommendationZh = if (hit) "弱到中等线索，不等于识别了全部隐藏框架。" else "未看到不等于没有注入。",
-            rawEvidence = mapOf("state" to snapshot.mapsState.name, "hits" to snapshot.mapHits.joinToString("|")),
+            expectedBaselineZh = "普通进程 maps 不含 frida-gadget、zygisk、libxposed。Frida 17 可能不留这些名字。",
+            recommendationZh = if (hit) {
+                "弱到中等线索，不等于识别了全部隐藏框架。"
+            } else if (unknown) {
+                "读不到的通道是未知，不要当成未发现注入。"
+            } else {
+                "未看到不等于没有注入。"
+            },
+            rawEvidence = mapOf(
+                "maps" to snapshot.mapsState.name,
+                "mapHits" to snapshot.mapHits.joinToString("|"),
+                "unix" to snapshot.unixState.name,
+                "unixHits" to snapshot.unixHits.joinToString("|"),
+            ),
             sourceAttribution = SOURCE,
         )
     }
