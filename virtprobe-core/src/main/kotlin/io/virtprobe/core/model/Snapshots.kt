@@ -277,6 +277,8 @@ data class RuntimeSnapshot(
     val mountState: ProbeVisibility = ProbeVisibility.NOT_VISIBLE,
     val mapHits: List<String> = emptyList(),
     val mapsState: ProbeVisibility = ProbeVisibility.NOT_VISIBLE,
+    val unixHits: List<String> = emptyList(),
+    val unixState: ProbeVisibility = ProbeVisibility.NOT_VISIBLE,
     val tracerPid: Int? = null,
     val javaDebuggerConnected: Boolean? = null,
     val selinuxEnforce: String? = null,

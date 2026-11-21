@@ -39,6 +39,7 @@ internal object RuntimeCollector {
     fun collect(context: Context, native: NativeEvidence): RuntimeSnapshot {
         val mounts = textOrDenied(native.mountinfo, native.mountinfoError, "/proc/self/mountinfo")
         val maps = textOrDenied(native.maps, native.mapsError, "/proc/self/maps")
+        val unix = readDirect("/proc/net/unix", 256 * 1024)
         val status = readDirect("/proc/self/status", 16 * 1024)
         val enforce = readDirect("/sys/fs/selinux/enforce", 16)
         return RuntimeSnapshot(
@@ -47,6 +48,14 @@ internal object RuntimeCollector {
             mountState = mounts.second,
             mapHits = RuntimeRules.mapMarkers(maps.first),
             mapsState = maps.second,
+            unixHits = RuntimeRules.unixMarkers(unix.first),
+            unixState = when {
+                unix.second?.contains("EACCES") == true || unix.second?.contains("Permission") == true ->
+                    ProbeVisibility.DENIED
+                unix.first.isNotBlank() -> ProbeVisibility.PRESENT
+                // 空读不是可信的阴性：Android 上这张表不该是空的，空通常是被过滤。
+                else -> ProbeVisibility.DENIED
+            },
             tracerPid = RuntimeRules.parseTracerPid(status.first).let { pid ->
                 if (pid != null) pid else if (status.second?.contains("EACCES") == true) null else pid
             },
