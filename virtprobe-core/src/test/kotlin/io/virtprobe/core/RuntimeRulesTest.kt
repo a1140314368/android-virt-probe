@@ -100,6 +100,15 @@ class RuntimeRulesTest {
     }
 
     @Test
+    fun tracerAndMapMarkersAvoidLooseMatches() {
+        assertEquals(0, RuntimeRules.parseTracerPid("Name:\tapp\nTracerPid:\t0\n"))
+        assertEquals(12, RuntimeRules.parseTracerPid("TracerPid: 12\n"))
+        assertEquals(null, RuntimeRules.parseTracerPid("no tracer line"))
+        assertTrue(RuntimeRules.mapMarkers("r-xp /data/local/tmp/frida-gadget.so").contains("frida-gadget"))
+        assertTrue(RuntimeRules.mapMarkers("callspd helper").isEmpty())
+    }
+
+    @Test
     fun mapAndMountHitsStayClues() {
         val findings = RuntimeRules.evaluate(
             realRuntimeSnapshot().copy(

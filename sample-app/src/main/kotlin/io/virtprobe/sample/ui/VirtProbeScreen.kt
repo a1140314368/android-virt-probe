@@ -56,6 +56,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.virtprobe.core.model.EnvironmentVerdict
 import io.virtprobe.core.model.ModuleSummary
+import io.virtprobe.core.json.ReportJson
 import io.virtprobe.core.model.ProbeReport
 import io.virtprobe.core.model.Severity
 import io.virtprobe.core.model.SignalCategory
@@ -100,6 +101,10 @@ fun VirtProbeScreen() {
             try {
                 val value = withContext(Dispatchers.IO) { VirtProbe.scan(activity) }
                 report = value
+                runCatching {
+                    val dir = activity.getExternalFilesDir(null) ?: return@runCatching
+                    java.io.File(dir, "last-report.json").writeText(ReportJson.stringify(value))
+                }
             } catch (t: Throwable) {
                 error = t.message ?: t.javaClass.simpleName
             } finally {

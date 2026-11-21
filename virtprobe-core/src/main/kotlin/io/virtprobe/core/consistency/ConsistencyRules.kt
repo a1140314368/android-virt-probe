@@ -221,7 +221,7 @@ object ConsistencyRules {
         val unlocked = locked == "0" || vbmeta == "unlocked"
         val hit = badVerified || unlocked
         val severity = when (verified) {
-            "red", "yellow" -> Severity.HIGH
+            "red" -> Severity.HIGH
             else -> Severity.MEDIUM
         }
         return finding(
@@ -231,10 +231,20 @@ object ConsistencyRules {
             confidence = 0.82,
             detected = hit,
             titleZh = "验证启动与锁状态",
-            summaryZh = if (hit) "验证启动不是 green，或引导程序未锁定。" else if (allEmpty) "没有读到启动校验属性。" else "验证启动为 green 且未发现解锁标记。",
+            summaryZh = when {
+                verified == "red" -> "验证启动状态为 red"
+                verified == "yellow" -> "疑似自定义信任根，设备仍锁定"
+                verified == "orange" || unlocked -> "疑似引导程序已解锁"
+                allEmpty -> "没有读到启动校验属性"
+                else -> "验证启动为 green，未发现解锁标记"
+            },
             observedDataZh = "ro.boot.verifiedbootstate=${verified.ifBlank { "（空）" }}，ro.boot.flash.locked=${locked.ifBlank { "（空）" }}，ro.boot.vbmeta.device_state=${vbmeta.ifBlank { "（空）" }}。",
-            expectedBaselineZh = "量产真机的 verifiedbootstate 应为 green，flash.locked 应为 1，vbmeta.device_state 应为 locked。orange 表示已解锁，red/yellow 表示验证失败。部分机型不暴露这些属性，读不到不算命中。",
-            recommendationZh = "启动链不是锁定的验证启动。解锁设备不一定是虚拟机，但应提高风控等级，并与 Keystore 的 RootOfTrust 对照。",
+            expectedBaselineZh = "官方：green=锁定且官方信任根；yellow=锁定但自定义信任根；orange=已解锁。空值是未知。",
+            recommendationZh = when {
+                hit -> "解锁或自定义信任根不等于虚拟机。建议提高风控并对照 Keystore。"
+                allEmpty -> "属性为空是未知，不要当成 green。"
+                else -> "此项未形成异常结论。"
+            },
             rawEvidence = mapOf(
                 "verifiedbootstate" to verified,
                 "flash.locked" to locked,

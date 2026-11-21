@@ -19,6 +19,30 @@ object RuntimeRules {
     private const val SOURCE =
         "路径思路参考 scottyab/rootbeer（Apache-2.0，commit de7bc7b）。Magisk 为 GPL-3.0，只采用公开安装目录名，未复制其源码。调试看 TracerPid 与 Debug.isDebuggerConnected，依据 OWASP MASTG-KNOW-0028。Verified Boot 的 green/yellow/orange 依据 AOSP 启动流程文档。未复制 GPL 检测器源码。"
 
+    fun parseTracerPid(status: String): Int? {
+        val line = status.lineSequence().firstOrNull {
+            it.trimStart().startsWith("TracerPid", ignoreCase = true)
+        } ?: return null
+        return line.substringAfter(':', "").trim().toIntOrNull()
+    }
+
+    /** 只匹配库名或路径片段，避免短词 lspd 碰到无关字符串。 */
+    fun mapMarkers(text: String): List<String> {
+        if (text.isBlank()) return emptyList()
+        val lower = text.lowercase()
+        val keys = listOf(
+            "frida-agent",
+            "frida-gadget",
+            "libfrida",
+            "zygisk",
+            "libriru",
+            "libxposed",
+            "lspd.so",
+            "/lspd",
+        )
+        return keys.filter { lower.contains(it) }
+    }
+
     fun evaluate(snapshot: RuntimeSnapshot): List<SignalFinding> = listOf(
         suPaths(snapshot),
         mounts(snapshot),
@@ -184,7 +208,7 @@ object RuntimeRules {
                 unknown -> "无法检查"
                 else -> "构建标记像量产用户系统"
             },
-            observedDataZh = "tags=${tags.ifBlank { "空" }}，ro.secure=${secure.ifBlank { "空" }}，ro.debuggable=${debuggable.ifBlank { "空" }}",
+            observedDataZh = "tags=${tags.ifBlank { "未读到" }}，ro.secure=${secure.ifBlank { "未读到" }}，ro.debuggable=${debuggable.ifBlank { "未读到" }}",
             expectedBaselineZh = "用户版常见 release-keys、ro.secure=1、ro.debuggable=0。模拟器和工程机会不同。",
             recommendationZh = if (hit) "说明系统不是常规用户版。不等于恶意。" else "属性被隐藏时会漏报。",
             rawEvidence = mapOf("tags" to tags, "ro.secure" to secure, "ro.debuggable" to debuggable),

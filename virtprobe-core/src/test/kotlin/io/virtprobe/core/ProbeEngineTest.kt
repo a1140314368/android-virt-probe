@@ -360,6 +360,42 @@ class ProbeEngineTest {
         assertEquals(EnvironmentVerdict.EMULATOR_OR_VM, report.verdict)
     }
 
+    @Test
+    @DisplayName("启动属性为空是未知，yellow 是自定义信任根而不是验证失败")
+    fun emptyBootIsUnknownAndYellowIsCustomRoot() {
+        val empty = ProbeEngine.evaluate(
+            ProbeSnapshots(
+                consistency = realConsistencySnapshot().copy(
+                    nativeProperties = realProperties()
+                        .minus("ro.boot.verifiedbootstate")
+                        .minus("ro.boot.flash.locked")
+                        .minus("ro.boot.vbmeta.device_state"),
+                ),
+            ),
+            EngineConfig(clockEpochMs = 12),
+        ).findings.single { it.signalId == "con.boot.state" }
+        assertFalse(empty.detected)
+        assertTrue(empty.recommendationZh.contains("未知"))
+        assertTrue(empty.summaryZh.contains("没有读到"))
+
+        val yellow = ProbeEngine.evaluate(
+            ProbeSnapshots(
+                consistency = realConsistencySnapshot().copy(
+                    nativeProperties = realProperties() + mapOf(
+                        "ro.boot.verifiedbootstate" to "yellow",
+                        "ro.boot.flash.locked" to "1",
+                        "ro.boot.vbmeta.device_state" to "locked",
+                    ),
+                ),
+            ),
+            EngineConfig(clockEpochMs = 13),
+        ).findings.single { it.signalId == "con.boot.state" }
+        assertTrue(yellow.detected)
+        assertEquals(Severity.MEDIUM, yellow.severity)
+        assertTrue(yellow.summaryZh.contains("自定义信任根"))
+        assertFalse(yellow.expectedBaselineZh.contains("验证失败"))
+    }
+
     private fun NodeVisibilityDenied() = io.virtprobe.core.model.NodeVisibility.PERMISSION_DENIED
 
     private fun SignalFinding.assertNarrative() {

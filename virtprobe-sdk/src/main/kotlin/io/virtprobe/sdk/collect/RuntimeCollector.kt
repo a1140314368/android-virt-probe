@@ -7,10 +7,14 @@ import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.Debug
 import android.provider.Settings
+import android.system.ErrnoException
+import android.system.Os
+import android.system.OsConstants
 import io.virtprobe.core.model.ProbeVisibility
 import io.virtprobe.core.model.RuntimeSnapshot
+import io.virtprobe.core.runtime.RuntimeRules
 import io.virtprobe.sdk.native.NativeEvidence
-import java.io.File
+import java.io.FileNotFoundException
 
 internal object RuntimeCollector {
     private val binaries = listOf(
@@ -24,7 +28,6 @@ internal object RuntimeCollector {
         "/data/adb/ap",
     )
     private val mountMarkers = listOf("magisk", "zygisk", "/data/adb/ksu", "/data/adb/ap", "/data/adb/modules")
-    private val mapMarkers = listOf("frida-agent", "frida-gadget", "libfrida", "zygisk", "libriru", "libxposed", "lspd")
     private val packages = listOf(
         "com.topjohnwu.magisk",
         "me.weishu.kernelsu",
@@ -36,21 +39,23 @@ internal object RuntimeCollector {
     fun collect(context: Context, native: NativeEvidence): RuntimeSnapshot {
         val mounts = textOrDenied(native.mountinfo, native.mountinfoError, "/proc/self/mountinfo")
         val maps = textOrDenied(native.maps, native.mapsError, "/proc/self/maps")
-        val status = AndroidSignals.readText("/proc/self/status", 16 * 1024)
-        val enforce = AndroidSignals.readText("/sys/fs/selinux/enforce", 16)
+        val status = readDirect("/proc/self/status", 16 * 1024)
+        val enforce = readDirect("/sys/fs/selinux/enforce", 16)
         return RuntimeSnapshot(
             binaryProbes = binaries.associateWith { probe(it) },
             mountHits = hits(mounts.first, mountMarkers),
             mountState = mounts.second,
-            mapHits = hits(maps.first, mapMarkers),
+            mapHits = RuntimeRules.mapMarkers(maps.first),
             mapsState = maps.second,
-            tracerPid = tracer(status),
+            tracerPid = RuntimeRules.parseTracerPid(status.first).let { pid ->
+                if (pid != null) pid else if (status.second?.contains("EACCES") == true) null else pid
+            },
             javaDebuggerConnected = runCatching { Debug.isDebuggerConnected() }.getOrNull(),
             selinuxEnforce = enforce.first.trim().ifBlank { null },
             securityPatch = Build.VERSION.SECURITY_PATCH.orEmpty(),
-            buildTags = native.properties["ro.build.tags"].orEmpty().ifBlank { Build.TAGS.orEmpty() },
-            roSecure = native.properties["ro.secure"].orEmpty(),
-            roDebuggable = native.properties["ro.debuggable"].orEmpty(),
+            buildTags = firstNonBlank(native.properties["ro.build.tags"], AndroidSignals.systemProperty("ro.build.tags"), Build.TAGS),
+            roSecure = firstNonBlank(native.properties["ro.secure"], AndroidSignals.systemProperty("ro.secure")),
+            roDebuggable = firstNonBlank(native.properties["ro.debuggable"], AndroidSignals.systemProperty("ro.debuggable")),
             adbEnabled = globalFlag(context, "adb_enabled"),
             vpnActive = vpn(context),
             httpProxy = proxy(context),
@@ -60,7 +65,14 @@ internal object RuntimeCollector {
     }
 
     private fun probe(path: String): ProbeVisibility = try {
-        if (File(path).exists()) ProbeVisibility.PRESENT else ProbeVisibility.NOT_VISIBLE
+        Os.access(path, OsConstants.F_OK)
+        ProbeVisibility.PRESENT
+    } catch (e: ErrnoException) {
+        when (e.errno) {
+            OsConstants.EACCES, OsConstants.EPERM -> ProbeVisibility.DENIED
+            OsConstants.ENOENT -> ProbeVisibility.NOT_VISIBLE
+            else -> ProbeVisibility.DENIED
+        }
     } catch (_: SecurityException) {
         ProbeVisibility.DENIED
     }
@@ -84,10 +96,27 @@ internal object RuntimeCollector {
         return markers.filter { lower.contains(it) }
     }
 
-    private fun tracer(status: Pair<String, String?>): Int? {
-        val line = status.first.lineSequence().firstOrNull { it.startsWith("TracerPid", ignoreCase = true) } ?: return null
-        return line.substringAfter(':').trim().toIntOrNull()
+    private fun readDirect(path: String, maxBytes: Int): Pair<String, String?> = try {
+        java.io.File(path).inputStream().use { input ->
+            val buffer = ByteArray(maxBytes)
+            val count = input.read(buffer)
+            if (count <= 0) "" to null else String(buffer, 0, count, Charsets.ISO_8859_1) to null
+        }
+    } catch (_: FileNotFoundException) {
+        "" to "ABSENT"
+    } catch (t: SecurityException) {
+        "" to "EACCES"
+    } catch (t: Throwable) {
+        val message = t.message.orEmpty()
+        if (message.contains("EACCES", ignoreCase = true) || message.contains("Permission", ignoreCase = true)) {
+            "" to "EACCES"
+        } else {
+            "" to (t.message ?: t.javaClass.simpleName)
+        }
     }
+
+    private fun firstNonBlank(vararg values: String?): String =
+        values.firstOrNull { !it.isNullOrBlank() }.orEmpty()
 
     private fun globalFlag(context: Context, key: String): Boolean? = try {
         Settings.Global.getInt(context.contentResolver, key, -1).let { if (it < 0) null else it == 1 }
