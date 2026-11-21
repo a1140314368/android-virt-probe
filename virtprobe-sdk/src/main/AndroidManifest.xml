@@ -29,5 +29,10 @@
         <package android:name="org.autojs.autojs" />
         <package android:name="com.cyjh.mobileanjian" />
         <package android:name="net.dinglisch.android.taskerm" />
+        <package android:name="com.topjohnwu.magisk" />
+        <package android:name="me.weishu.kernelsu" />
+        <package android:name="me.bmax.apatch" />
+        <package android:name="org.lsposed.manager" />
+        <package android:name="de.robv.android.xposed.installer" />
     </queries>
 </manifest>

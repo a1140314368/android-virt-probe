@@ -105,7 +105,9 @@ class RuntimeRulesTest {
         assertEquals(12, RuntimeRules.parseTracerPid("TracerPid: 12\n"))
         assertEquals(null, RuntimeRules.parseTracerPid("no tracer line"))
         assertTrue(RuntimeRules.mapMarkers("r-xp /data/local/tmp/frida-gadget.so").contains("frida-gadget"))
+        assertTrue(RuntimeRules.mapMarkers("/data/local/tmp/re.frida.server/frida-agent-64.so").contains("frida-agent"))
         assertTrue(RuntimeRules.mapMarkers("callspd helper").isEmpty())
+        assertTrue(RuntimeRules.mapMarkers("library fridahelper.so").isEmpty())
     }
 
     @Test
