@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 package io.virtprobe.sample
 
+import android.graphics.Color
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import io.virtprobe.sample.ui.VirtProbeScreen
 import io.virtprobe.sdk.VirtProbe
 
@@ -12,6 +15,10 @@ class MainActivity : ComponentActivity() {
     private var screenCaptureWatch: AutoCloseable? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT),
+        )
         super.onCreate(savedInstanceState)
         setContent { VirtProbeScreen() }
     }

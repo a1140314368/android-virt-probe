@@ -16,9 +16,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
@@ -255,7 +258,12 @@ fun VirtProbeScreen() {
     }
 
     MaterialTheme(colorScheme = lightColorScheme(primary = Ink, background = Paper, surface = Card, onBackground = Ink, onSurface = Ink)) {
-        Surface(modifier = Modifier.fillMaxSize().imePadding(), color = Paper) {
+        Surface(
+            modifier = Modifier
+                .fillMaxSize()
+                .windowInsetsPadding(WindowInsets.safeDrawing.union(WindowInsets.ime)),
+            color = Paper,
+        ) {
             Box(Modifier.fillMaxSize()) {
             Column(Modifier.fillMaxSize()) {
                 TopBar(
@@ -665,7 +673,6 @@ private fun FilterSheet(
                 .fillMaxWidth()
                 .heightIn(max = 560.dp)
                 .background(Card)
-                .navigationBarsPadding()
                 .verticalScroll(rememberScrollState())
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),

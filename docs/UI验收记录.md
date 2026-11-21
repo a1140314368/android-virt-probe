@@ -4,19 +4,21 @@
 
 设备：AVD virtprobe，API 35，x86_64，ranchu，`emulator-5554`。没有崩溃。
 
+`33-ui-home.png` 和 `36-ui-restricted-detail.png` 标题与状态栏时间重叠，状态栏图标在浅底上发白。那两张不能当作界面通过。下面的截图是补上安全区之后重装的整屏。
+
+API 35 目标会把内容画到系统栏下面，原来的深色 `statusBarColor` 又让时间保持白色。现在窗口走 edge-to-edge，状态栏和导航栏用深色图标，内容用 `safeDrawing` 与输入法 insets 的并集让开，不隐藏系统栏。
+
 | 检查 | 结果 | 证据 |
 | --- | --- | --- |
-| 首屏分组清单，无安全分 | 通过。标题为结论，计数来自当次报告 | `33-ui-home.png` |
-| 筛选底部弹层，含重置和完成 | 通过。弹层盖住底部导航 | `34-ui-filter.png` |
-| 无法检查筛选与详情 | 通过。su 路径为拒绝读取，不是未发现 | `35-ui-restricted-list.png`、`36-ui-restricted-detail.png` |
-| 技术详情默认折叠，展开后有来源、局限、原始证据 | 通过 | `37-ui-tech.png` |
-| 系统返回保留「无法检查」筛选 | 通过。返回后标题仍是筛选·无法检查 | `38-ui-back.png` |
-| 名称搜索 | 通过。搜索 SELinux 只留下该项，状态为无法检查 | `39-ui-search.png` |
-| 分组可收起 | 通过。模拟器分组变为「展开」 | `45-ui-collapsed.png` |
-| 模拟器详情 | 通过。cpuinfo 线索，实际值、参考值、建议各一句 | `46-ui-emulator-detail.png` |
-| 虚拟副屏详情 | 通过。实际值含 Overlay #1。关闭副屏并冷启动后只有默认屏 | `48-ui-display-group.png`、`49-ui-display-detail.png` |
-| 输入与软键盘 | 通过。adb 点击为线索；输入 hi 后为软键盘，不升成注入 | `42-ui-input.png`、`44-ui-softkey-verdict.png` |
-| 重新扫描防重入 | 按钮在扫描中禁用。扫描通常不到一秒，没有稳定截到「扫描中」字样 | `40-ui-scanning.png` 未作为扫描中证据 |
-| 导出 | 保留「导出 JSON」 | 首屏可见 |
+| 首屏避开状态栏，图标可读，无安全分 | 通过。标题在时间下方 | `50-ui-home-insets.png` |
+| 详情返回与标题避开状态栏 | 通过 | `53-ui-detail-insets.png` |
+| 筛选弹层，重置和完成可见；滑到底能看到「系统信任」，不被手势条挡住 | 通过 | `51-ui-filter-insets.png`、`60-ui-filter-scrolled.png` |
+| 无法检查列表与返回后仍是该筛选 | 通过 | `52-ui-restricted-insets.png`、`55-ui-back-filter.png` |
+| 技术详情可滑到原始证据末尾，上一项在手势条上方 | 通过 | `54-ui-tech-bottom.png` |
+| 点进较低的一项再返回，该项仍在视野里 | 通过。QEMU 内核与启动属性 | `59-ui-scroll-restored.png` |
+| 输入页避开状态栏 | 通过 | `56-ui-input-insets.png` |
+| 软键盘出现时结论仍可见，导航在键盘上方；收起后建议和技术详情回来 | 通过。输入 hi 仍是软键盘，不是注入 | `57-ui-keyboard.png`、`58-ui-keyboard-gone.png`、`61-ui-keyboard-scrolled.png` |
+| 名称搜索、分组收起、副屏详情 | 仍以上一轮功能截图为准，逻辑未改 | `39-ui-search.png`、`45-ui-collapsed.png`、`49-ui-display-detail.png` |
+| 重新扫描防重入 | 按钮在扫描中禁用。扫描通常不到一秒，没有稳定截到「扫描中」 | 受限 |
 
 本轮环境复测见双层验证矩阵末节。代理写入 `10.0.2.2:8080` 后仍是未发现线索；清除时要写 `:0` 再删，否则进程仍读到旧代理。最终冷启动为「代理=无」。`/system/xbin/su` 仍是 `rwsr-x---`，应用侧无法检查。
