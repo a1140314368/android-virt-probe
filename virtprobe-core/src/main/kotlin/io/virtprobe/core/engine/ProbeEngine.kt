@@ -9,6 +9,7 @@ import io.virtprobe.core.model.ProbeReport
 import io.virtprobe.core.model.ProbeSnapshots
 import io.virtprobe.core.model.SignalCategory
 import io.virtprobe.core.report.ReportComposer
+import io.virtprobe.core.runtime.RuntimeRules
 import io.virtprobe.core.virtualdisplay.VirtualDisplayRules
 
 /**
@@ -23,6 +24,7 @@ data class EngineConfig(
     val enableVirtualDisplay: Boolean = true,
     val enableConsistency: Boolean = true,
     val enableInput: Boolean = true,
+    val enableRuntime: Boolean = true,
     val clockEpochMs: Long = System.currentTimeMillis(),
 )
 
@@ -47,6 +49,9 @@ object ProbeEngine {
             if (config.enableInput) {
                 addAll(snapshots.liveInputFindings.filter { it.detected })
             }
+            if (config.enableRuntime && snapshots.runtime != null) {
+                addAll(RuntimeRules.evaluate(snapshots.runtime))
+            }
         }
         val enabled = buildSet {
             if (config.enableEmulator && snapshots.emulator != null) add(SignalCategory.EMULATOR)
@@ -56,6 +61,7 @@ object ProbeEngine {
             if (config.enableInput && (snapshots.input != null || snapshots.liveInputFindings.isNotEmpty())) {
                 add(SignalCategory.INPUT)
             }
+            if (config.enableRuntime && snapshots.runtime != null) add(SignalCategory.RUNTIME)
         }
         return ReportComposer.compose(findings, enabled, config.clockEpochMs)
     }

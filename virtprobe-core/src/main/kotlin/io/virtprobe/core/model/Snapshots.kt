@@ -260,12 +260,44 @@ data class InputAuditSnapshot(
  *
  * @property liveInputFindings 实时输入监控已经产出的命中项，会并入同一份报告。
  */
+/** 路径探测结果。看不到不等于不存在。 */
+enum class ProbeVisibility {
+    PRESENT,
+    NOT_VISIBLE,
+    DENIED,
+}
+
+/**
+ * 运行环境材料：提权、注入、调试、SELinux、补丁和网络姿态。
+ * 不包含本应用签名、安装来源或 DEX 自校验。
+ */
+data class RuntimeSnapshot(
+    val binaryProbes: Map<String, ProbeVisibility> = emptyMap(),
+    val mountHits: List<String> = emptyList(),
+    val mountState: ProbeVisibility = ProbeVisibility.NOT_VISIBLE,
+    val mapHits: List<String> = emptyList(),
+    val mapsState: ProbeVisibility = ProbeVisibility.NOT_VISIBLE,
+    val tracerPid: Int? = null,
+    val javaDebuggerConnected: Boolean? = null,
+    val selinuxEnforce: String? = null,
+    val securityPatch: String = "",
+    val buildTags: String = "",
+    val roSecure: String = "",
+    val roDebuggable: String = "",
+    val adbEnabled: Boolean? = null,
+    val vpnActive: Boolean? = null,
+    val httpProxy: String? = null,
+    val cluePackages: List<String> = emptyList(),
+    val nowEpochMs: Long = 0L,
+)
+
 data class ProbeSnapshots(
     val emulator: EmulatorSnapshot? = null,
     val container: ContainerSnapshot? = null,
     val virtualDisplay: VirtualDisplaySnapshot? = null,
     val consistency: ConsistencySnapshot? = null,
     val input: InputAuditSnapshot? = null,
+    val runtime: RuntimeSnapshot? = null,
     val liveInputFindings: List<SignalFinding> = emptyList(),
 )
 

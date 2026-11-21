@@ -87,6 +87,20 @@ internal object AndroidSignals {
 
     fun prefer(nativeText: String, javaText: String): String = nativeText.ifBlank { javaText }
 
+    /** 原生属性为空时的回退。隐藏 API 失败则返回空，调用方应显示无法读取，而不是编造。 */
+    fun systemProperty(key: String): String {
+        val reflected = reflectSystemProperty(key).orEmpty()
+        if (reflected.isNotBlank()) return reflected
+        return try {
+            val process = Runtime.getRuntime().exec(arrayOf("getprop", key))
+            val value = process.inputStream.bufferedReader().use { it.readText() }.trim()
+            process.waitFor()
+            value
+        } catch (_: Throwable) {
+            ""
+        }
+    }
+
     private fun reflectSystemProperty(key: String): String? {
         return try {
             val clazz = Class.forName("android.os.SystemProperties")

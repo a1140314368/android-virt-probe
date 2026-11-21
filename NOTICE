@@ -63,6 +63,10 @@ repository, or at:
   本项目没有复制其源码。容器检测依据 Android 多用户目录、/proc/self/maps、
   /proc/self/mountinfo、类加载器和调用栈的公开系统原理独立实现。
 
+运行环境补充信号参考 scottyab/rootbeer（Apache-2.0）。
+只借鉴 su / test-keys / ro.secure / ro.debuggable 这类检查面，检测代码独立编写。
+Magisk 本体是 GPL-3.0，本仓库没有复制其源码。
+
 明确不依赖的闭源组件
 --------------------
 

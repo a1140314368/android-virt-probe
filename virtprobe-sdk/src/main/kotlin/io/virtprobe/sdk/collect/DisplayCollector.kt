@@ -79,7 +79,9 @@ internal object DisplayCollector {
 
     private fun remoteRoutes(context: Context): Pair<List<String>, String?> {
         return try {
-            val router = MediaRouter.getInstance(context)
+            val router = context.getSystemService(Context.MEDIA_ROUTER_SERVICE) as? MediaRouter
+                ?: return emptyList<String>() to null
+            val selectedRoute = router.getSelectedRoute(MediaRouter.ROUTE_TYPE_LIVE_VIDEO)
             val names = mutableListOf<String>()
             var selected: String? = null
             for (index in 0 until router.routeCount) {
@@ -88,7 +90,7 @@ internal object DisplayCollector {
                 val name = route.getName(context)?.toString().orEmpty()
                 if (name.isBlank()) continue
                 names += name
-                if (route.isSelected) selected = name
+                if (route == selectedRoute) selected = name
             }
             names to selected
         } catch (_: Throwable) {
@@ -98,7 +100,7 @@ internal object DisplayCollector {
 
     private fun wifiDisplay(context: Context): Boolean? {
         return try {
-            Settings.Global.getInt(context.contentResolver, Settings.Global.WIFI_DISPLAY_ON, 0) == 1
+            Settings.Global.getInt(context.contentResolver, "wifi_display_on", 0) == 1
         } catch (_: Throwable) {
             null
         }

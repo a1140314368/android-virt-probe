@@ -13,6 +13,7 @@ data class VirtProbeConfig(
     val enableVirtualDisplay: Boolean = true,
     val enableConsistency: Boolean = true,
     val enableInput: Boolean = true,
+    val enableRuntime: Boolean = true,
     val sensorSampleTimeoutMs: Long = 200,
     val includeRecentInput: Boolean = true,
 )

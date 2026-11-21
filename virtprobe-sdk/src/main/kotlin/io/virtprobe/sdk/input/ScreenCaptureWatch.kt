@@ -25,29 +25,36 @@ class ScreenCaptureWatch(
 
     fun register() {
         if (registered || Build.VERSION.SDK_INT < 34) return
-        val callbackClass = Class.forName("android.app.Activity\$ScreenCaptureCallback")
-        val proxy = Proxy.newProxyInstance(callbackClass.classLoader, arrayOf(callbackClass)) { self, method, args ->
-            when (method.name) {
-                "onScreenCaptured" -> {
-                    notified = true
-                    onState(true)
-                    null
+        try {
+            val callbackClass = Class.forName("android.app.Activity\$ScreenCaptureCallback")
+            val proxy = Proxy.newProxyInstance(callbackClass.classLoader, arrayOf(callbackClass)) { self, method, args ->
+                when (method.name) {
+                    "onScreenCaptured" -> {
+                        notified = true
+                        onState(true)
+                        null
+                    }
+                    "hashCode" -> System.identityHashCode(self)
+                    "equals" -> self === args?.getOrNull(0)
+                    "toString" -> "virtprobe.ScreenCaptureCallback"
+                    else -> null
                 }
-                "hashCode" -> System.identityHashCode(self)
-                "equals" -> self === args?.getOrNull(0)
-                "toString" -> "virtprobe.ScreenCaptureCallback"
-                else -> null
             }
+            val register = Activity::class.java.getMethod(
+                "registerScreenCaptureCallback",
+                java.util.concurrent.Executor::class.java,
+                callbackClass,
+            )
+            register.invoke(activity, activity.mainExecutor, proxy)
+            callback = proxy
+            registered = true
+            onState(false)
+        } catch (t: Throwable) {
+            // Android 14 起该回调需要普通权限 DETECT_SCREEN_CAPTURE。没声明时系统会抛 SecurityException。
+            // 这不是「正在录屏」，只表示回调没挂上，扫描继续。
+            registered = false
+            callback = null
         }
-        val register = Activity::class.java.getMethod(
-            "registerScreenCaptureCallback",
-            java.util.concurrent.Executor::class.java,
-            callbackClass,
-        )
-        register.invoke(activity, activity.mainExecutor, proxy)
-        callback = proxy
-        registered = true
-        onState(false)
     }
 
     override fun close() {

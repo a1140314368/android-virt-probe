@@ -24,7 +24,7 @@ class InputAndParseTest {
         assertTrue(findings.none { it.detected })
         val story = InputEventAnalyzer.narrateMotion(sample, findings)
         assertFalse(story.suspicious)
-        assertEquals("本次输入更接近物理硬件来源", story.verdictZh)
+        assertEquals("本次输入未看到明显注入特征。这是启发式判断，不能证明来自物理手指。", story.verdictZh)
         assertTrue(story.observedDataZh.contains("deviceId=4"))
         assertTrue(story.observedDataZh.contains("pressure=0.42"))
         assertTrue(story.expectedBaselineZh.contains("真实手指触控应来自物理触控芯片"))
