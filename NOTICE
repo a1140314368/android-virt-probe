@@ -1,0 +1,70 @@
+android-virt-probe
+Copyright 2026 android-virt-probe contributors
+
+This product is licensed under the Apache License, Version 2.0.
+You may obtain a copy of the License in the LICENSE file at the root of this
+repository, or at:
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+本项目的检测代码、原生采集器和演示应用均为独立编写。
+下面列出的项目只作为公开方法与架构思路的参考，本仓库没有复制它们的源文件。
+
+可融合并已规范署名的兼容许可证项目
+----------------------------------
+
+- lotty520/Detect-Any
+  许可证：Apache-2.0
+  参考范围：多维度环境检测的分类方式，包括模拟器、容器与虚拟屏信号如何组织成报告。
+
+- WsttXm/RiskEngine
+  许可证：MIT
+  参考范围：风险信号分层、跨层属性不一致时提高严重级别的思路。
+
+- brunovsiqueira/vigil-android
+  许可证：Apache-2.0
+  参考范围：模拟器属性、文件节点与容器痕迹可以同时采集。
+
+- lamster2018/EasyProtector
+  许可证：Apache-2.0
+  参考范围：模拟器文件/包名、以及多开数据目录异常的公开检查面。
+
+- strazzere/anti-emulator
+  许可证：Apache-2.0
+  参考范围：QEMU 属性、qemu 管道和 goldfish 设备节点这一类经典模拟器特征。
+
+- framgia/android-emulator-detector
+  许可证：Apache-2.0
+  参考范围：Build 字段、已知模拟器包名和模拟器属性的组合判断。
+
+- su-vikas/conbeerlib
+  许可证：MIT
+  参考范围：同 UID 多包、类加载路径和容器环境可以并列观察。
+
+上述名称只说明「问题域里哪些信号值得暴露」。具体规则、阈值、中文说明和报告结构都在本仓库重新设计。
+
+洁净室实现，未复制任何源码
+------------------------
+
+- Huai-Tian/ScreenshotDetector
+  许可证：GPL-3.0
+  本项目没有读取、复制或改写该仓库的代码。
+  虚拟屏幕与投屏检测只使用 Android 公开 SDK：DisplayManager、Display 标志位、
+  Activity.ScreenCaptureCallback（Android 14 / API 34 的屏幕采集回调）、
+  AppOpsManager 的投射操作，以及框架自带的 MediaRouter。
+
+- 1193776794/launch
+  许可证：仓库没有明确的 SPDX 许可证。
+  本项目没有复制其源码。输入来源检测依据 InputDevice、MotionEvent、KeyEvent、
+  AccessibilityManager 和 Linux 输入子系统的公开行为独立实现。
+
+- ysrc/AntiVirtualApp
+  许可证：仓库没有明确的 SPDX 许可证。
+  本项目没有复制其源码。容器检测依据 Android 多用户目录、/proc/self/maps、
+  /proc/self/mountinfo、类加载器和调用栈的公开系统原理独立实现。
+
+明确不依赖的闭源组件
+--------------------
+
+本项目不引用、不链接、不建议接入 Free-RASP 或其它闭源环境检测 SDK。
+Android Keystore、PackageManager、DisplayManager 等均属于操作系统公开接口。
