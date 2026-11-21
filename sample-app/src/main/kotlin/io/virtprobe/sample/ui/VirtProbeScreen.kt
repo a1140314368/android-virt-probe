@@ -3,6 +3,7 @@ package io.virtprobe.sample.ui
 
 import android.content.Intent
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -15,12 +16,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -38,6 +40,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -52,16 +55,13 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import io.virtprobe.core.model.EnvironmentVerdict
-import io.virtprobe.core.model.ModuleSummary
 import io.virtprobe.core.json.ReportJson
-import io.virtprobe.core.model.ProbeReport
-import io.virtprobe.core.model.Severity
-import io.virtprobe.core.model.SignalCategory
-import io.virtprobe.core.model.SignalFinding
 import io.virtprobe.core.model.InputNarrative
+import io.virtprobe.core.model.ProbeReport
+import io.virtprobe.core.model.SignalFinding
 import io.virtprobe.sdk.VirtProbe
 import io.virtprobe.sdk.input.VirtProbeWindowCallback
 import kotlinx.coroutines.Dispatchers
@@ -73,12 +73,90 @@ private val Ink = Color(0xFF1C211C)
 private val Muted = Color(0xFF5E675F)
 private val Card = Color(0xFFFFFCF7)
 private val Line = Color(0xFFDDD6C8)
-private val Good = Color(0xFF1E7A4D)
-private val GoodBg = Color(0xFFE7F5EC)
-private val Warn = Color(0xFF9A6200)
-private val WarnBg = Color(0xFFFFF3DE)
-private val Bad = Color(0xFFA33B32)
-private val BadBg = Color(0xFFFDEEEC)
+private val Clue = Color(0xFF9A6200)
+private val Restricted = Color(0xFF3E5C76)
+
+private enum class Page { Home, Input }
+
+private enum class UiGroup(val label: String) {
+    Emulator("模拟器 / 虚拟机"),
+    Container("应用内虚拟容器"),
+    Display("虚拟屏幕"),
+    Hardware("硬件一致性"),
+    Input("输入来源"),
+    Root("Root 与提权"),
+    Hook("Hook 与注入"),
+    Debug("调试与自动化"),
+    Trust("系统信任"),
+}
+
+private enum class RowStatus(val label: String) {
+    Clue("发现线索"),
+    Clear("未发现线索"),
+    Restricted("无法检查"),
+    Pending("待检测"),
+}
+
+private enum class StatusFilter { All, Clue, Clear, Restricted }
+
+/**
+ * 清单状态只解释已有报告，不新增检测。
+ * 读不到、被拒绝不是「未发现」。ADB、VPN、代理、无障碍和外设清单本身不是线索。
+ */
+private fun rowStatus(finding: SignalFinding): RowStatus {
+    if (finding.signalId in INFO_ONLY) {
+        return if (unreadable(finding)) RowStatus.Restricted else RowStatus.Clear
+    }
+    if (finding.detected) return RowStatus.Clue
+    if (unreadable(finding)) return RowStatus.Restricted
+    return RowStatus.Clear
+}
+
+private val INFO_ONLY = setOf("rt.net.posture", "in.a11y.enabled", "in.dev.inventory")
+
+private fun unreadable(finding: SignalFinding): Boolean {
+    val observed = finding.observedDataZh
+    val summary = finding.summaryZh
+    val readSucceeded = "读取错误=无" in observed || observed.contains("错误=无")
+    if (readSucceeded && listOf("EACCES", "拒绝读取", "未读到", "Permission").none { it in observed }) {
+        return false
+    }
+    if (listOf("EACCES", "拒绝读取", "未读到", "Permission", "不可读").any { it in observed }) return true
+    return summary.startsWith("无法检查") || summary.startsWith("没有读到") || summary.startsWith("无法读取")
+}
+
+private fun groupOf(finding: SignalFinding): UiGroup = when {
+    finding.signalId.startsWith("emu.") -> UiGroup.Emulator
+    finding.signalId.startsWith("ctn.") -> UiGroup.Container
+    finding.signalId.startsWith("vd.") -> UiGroup.Display
+    finding.signalId == "con.boot.state" -> UiGroup.Trust
+    finding.signalId.startsWith("con.") -> UiGroup.Hardware
+    finding.signalId == "in.auto.packages" || finding.signalId == "in.instrumentation" -> UiGroup.Debug
+    finding.signalId.startsWith("in.") -> UiGroup.Input
+    finding.signalId == "rt.su.paths" || finding.signalId == "rt.mount.markers" || finding.signalId == "rt.pkg.clue" -> UiGroup.Root
+    finding.signalId == "rt.maps.inject" -> UiGroup.Hook
+    finding.signalId == "rt.debug.tracer" || finding.signalId == "rt.net.posture" -> UiGroup.Debug
+    else -> UiGroup.Trust
+}
+
+private fun oneSentence(text: String, limit: Int = 72): String {
+    val flat = text.trim().replace('\n', ' ')
+    val end = flat.indexOf('。')
+    val sentence = if (end in 1 until limit) flat.substring(0, end + 1) else flat
+    return if (sentence.length <= limit) sentence else sentence.substring(0, limit).trimEnd() + "…"
+}
+
+/** 长证据只留一句，但要带上命中片段，避免只看到默认屏或前半段。 */
+private fun briefActual(text: String): String {
+    val flat = text.trim().replace('\n', ' ')
+    val key = listOf("Overlay", "拒绝读取", "EACCES", "未读到", "qemu", "goldfish", "dev-keys", "非默认")
+        .firstOrNull { it in flat }
+    if (key == null || flat.length <= 72) return oneSentence(flat)
+    val at = flat.indexOf(key)
+    val start = flat.lastIndexOf('；', at).let { if (it < 0) (at - 8).coerceAtLeast(0) else it + 1 }
+    val slice = flat.substring(start, flat.length).trim()
+    return if (slice.length <= 72) slice else slice.substring(0, 72).trimEnd() + "…"
+}
 
 @Composable
 fun VirtProbeScreen() {
@@ -88,10 +166,19 @@ fun VirtProbeScreen() {
     var report by remember { mutableStateOf<ProbeReport?>(null) }
     var scanning by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
-    var anomaliesOnly by remember { mutableStateOf(true) }
-    var category by remember { mutableStateOf<SignalCategory?>(null) }
-    var trace by remember { mutableStateOf<InputNarrative?>(null) }
+    var page by remember { mutableStateOf(Page.Home) }
+    var selectedId by remember { mutableStateOf<String?>(null) }
+    var query by remember { mutableStateOf("") }
+    var statusFilter by remember { mutableStateOf(StatusFilter.All) }
+    var groupFilter by remember { mutableStateOf<UiGroup?>(null) }
+    var filterOpen by remember { mutableStateOf(false) }
+    var collapsed by remember { mutableStateOf(setOf<UiGroup>()) }
     var showJson by remember { mutableStateOf(false) }
+    var trace by remember { mutableStateOf<InputNarrative?>(null) }
+    var savedIndex by remember { mutableIntStateOf(0) }
+    var savedOffset by remember { mutableIntStateOf(0) }
+    var restoreScroll by remember { mutableStateOf(false) }
+    val listState = rememberLazyListState()
 
     fun rescan() {
         if (scanning) return
@@ -114,6 +201,12 @@ fun VirtProbeScreen() {
     }
 
     LaunchedEffect(Unit) { rescan() }
+    LaunchedEffect(restoreScroll, selectedId, page) {
+        if (restoreScroll && selectedId == null && page == Page.Home) {
+            listState.scrollToItem(savedIndex, savedOffset)
+            restoreScroll = false
+        }
+    }
 
     val view = LocalView.current
     DisposableEffect(view) {
@@ -123,296 +216,411 @@ fun VirtProbeScreen() {
         onDispose { window.callback = previous }
     }
 
-    MaterialTheme(colorScheme = lightColorScheme(primary = Good, background = Paper, surface = Card, onBackground = Ink, onSurface = Ink)) {
-        Surface(modifier = Modifier.fillMaxSize(), color = Paper) {
-            val current = report
-            val visible = current?.findings.orEmpty().filter { finding ->
-                (category == null || finding.category == category) && (!anomaliesOnly || finding.detected)
+    val findings = report?.findings.orEmpty()
+    val rows = findings.map { it to rowStatus(it) }
+    val visible = rows.filter { (finding, status) ->
+        val group = groupOf(finding)
+        if (groupFilter != null && group != groupFilter) return@filter false
+        if (!scanning && statusFilter != StatusFilter.All && status != statusFilter.toRow()) return@filter false
+        val needle = query.trim()
+        if (needle.isNotEmpty()) {
+            val hay = "${finding.titleZh} ${finding.summaryZh} ${group.label} ${finding.signalId}"
+            if (!hay.contains(needle, ignoreCase = true)) return@filter false
+        }
+        true
+    }
+    val counted = rows.filter { (finding, _) ->
+        val group = groupOf(finding)
+        if (groupFilter != null && group != groupFilter) return@filter false
+        val needle = query.trim()
+        if (needle.isNotEmpty()) {
+            val hay = "${finding.titleZh} ${finding.summaryZh} ${group.label}"
+            if (!hay.contains(needle, ignoreCase = true)) return@filter false
+        }
+        true
+    }
+
+    BackHandler(enabled = filterOpen || selectedId != null || page == Page.Input) {
+        when {
+            filterOpen -> filterOpen = false
+            selectedId != null -> {
+                selectedId = null
+                restoreScroll = true
             }
-            LazyColumn(
-                modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                item { Spacer(Modifier.height(12.dp)) }
-                item {
-                    Text("虚拟环境探针", fontSize = 13.sp, color = Muted, fontWeight = FontWeight.Medium)
-                    Text("先看结论，再看是哪一类出了问题", fontSize = 22.sp, fontWeight = FontWeight.SemiBold, color = Ink)
-                    Text(
-                        "信号是启发式的：未命中不能证明真机，模拟器或 adb 注入也不能证明物理手指。",
-                        fontSize = 13.sp,
-                        color = Muted,
-                    )
-                }
-                item {
-                    ConclusionCard(
-                        report = current,
-                        scanning = scanning,
-                        error = error,
-                        onRescan = ::rescan,
-                        onExport = { showJson = true },
-                    )
-                }
-                if (current != null) {
-                    item {
-                        CategoryRow(
-                            summaries = current.moduleSummaries,
-                            selected = category,
-                            onSelect = { category = if (category == it) null else it },
+            page == Page.Input -> {
+                page = Page.Home
+                restoreScroll = true
+            }
+        }
+    }
+
+    MaterialTheme(colorScheme = lightColorScheme(primary = Ink, background = Paper, surface = Card, onBackground = Ink, onSurface = Ink)) {
+        Surface(modifier = Modifier.fillMaxSize().imePadding(), color = Paper) {
+            Box(Modifier.fillMaxSize()) {
+            Column(Modifier.fillMaxSize()) {
+                TopBar(
+                    title = when {
+                        selectedId != null -> findings.firstOrNull { it.signalId == selectedId }?.titleZh ?: "详情"
+                        page == Page.Input -> "输入体验"
+                        else -> "异常信号检测器"
+                    },
+                    showBack = selectedId != null,
+                    onBack = {
+                        selectedId = null
+                        restoreScroll = true
+                    },
+                )
+                Box(Modifier.weight(1f).fillMaxWidth()) {
+                    when {
+                        page == Page.Home && selectedId == null -> HomeList(
+                            report = report,
+                            scanning = scanning,
+                            error = error,
+                            visible = visible,
+                            totals = rows.map { it.second },
+                            query = query,
+                            onQuery = { query = it },
+                            filterLabel = filterLabel(statusFilter, groupFilter),
+                            onFilter = { filterOpen = true },
+                            onRescan = ::rescan,
+                            onExport = { showJson = true },
+                            collapsed = collapsed,
+                            onToggle = { group ->
+                                collapsed = if (group in collapsed) collapsed - group else collapsed + group
+                            },
+                            listState = listState,
+                            onOpen = { id ->
+                                savedIndex = listState.firstVisibleItemIndex
+                                savedOffset = listState.firstVisibleItemScrollOffset
+                                selectedId = id
+                                filterOpen = false
+                                restoreScroll = true
+                            },
+                            scanningStatus = scanning,
                         )
+                        page == Page.Home && selectedId != null -> {
+                            val index = visible.indexOfFirst { it.first.signalId == selectedId }
+                            val finding = findings.firstOrNull { it.signalId == selectedId }
+                            if (finding == null) {
+                                Text("这项不在当前报告里。", modifier = Modifier.padding(16.dp), color = Ink)
+                            } else {
+                                DetailPage(
+                                    finding = finding,
+                                    scanning = scanning,
+                                    indexLabel = if (index >= 0) "${index + 1} / ${visible.size}" else "",
+                                    hasPrev = index > 0,
+                                    hasNext = index >= 0 && index < visible.lastIndex,
+                                    onPrev = { selectedId = visible[index - 1].first.signalId },
+                                    onNext = { selectedId = visible[index + 1].first.signalId },
+                                )
+                            }
+                        }
+                        else -> InputPage(trace)
                     }
                 }
-                item {
-                    FilterRow(
-                        anomaliesOnly = anomaliesOnly,
-                        anomalyCount = current?.anomalyCount ?: 0,
-                        checkCount = current?.checkCount ?: 0,
-                        onAnomalies = { anomaliesOnly = true },
-                        onAll = { anomaliesOnly = false },
-                    )
+                if (selectedId == null) {
+                    BottomNav(page) { next ->
+                        if (next != page) {
+                            if (page == Page.Home) {
+                                savedIndex = listState.firstVisibleItemIndex
+                                savedOffset = listState.firstVisibleItemScrollOffset
+                                restoreScroll = true
+                            }
+                            page = next
+                            filterOpen = false
+                            selectedId = null
+                        }
+                    }
                 }
-                item { InputPlayground(trace) }
-                if (current != null && visible.isEmpty()) {
-                    item { EmptyState(anomaliesOnly) }
-                }
-                itemsIndexed(visible, key = { index, finding -> "${finding.category.name}:${finding.signalId}:$index" }) { _, finding ->
-                    FindingCard(finding)
-                }
-                item { Spacer(Modifier.height(24.dp)) }
+            }
+            if (filterOpen && page == Page.Home && selectedId == null) {
+                FilterSheet(
+                    statusFilter = statusFilter,
+                    groupFilter = groupFilter,
+                    counts = counted.groupingBy { it.second }.eachCount(),
+                    total = counted.size,
+                    onStatus = { statusFilter = it },
+                    onGroup = { group ->
+                        groupFilter = group
+                        if (group != null) collapsed = collapsed - group
+                    },
+                    onReset = {
+                        statusFilter = StatusFilter.All
+                        groupFilter = null
+                        query = ""
+                    },
+                    onClose = { filterOpen = false },
+                )
+            }
             }
         }
     }
 
     if (showJson && report != null) {
-        JsonDialog(json = report!!.toPrettyJson(), onDismiss = { showJson = false })
+        JsonDialog(report!!.toPrettyJson()) { showJson = false }
+    }
+}
+
+private fun StatusFilter.toRow(): RowStatus = when (this) {
+    StatusFilter.Clue -> RowStatus.Clue
+    StatusFilter.Clear -> RowStatus.Clear
+    StatusFilter.Restricted -> RowStatus.Restricted
+    StatusFilter.All -> RowStatus.Clear
+}
+
+private fun filterLabel(status: StatusFilter, group: UiGroup?): String {
+    if (status == StatusFilter.All && group == null) return "筛选"
+    val statusText = when (status) {
+        StatusFilter.All -> "全部状态"
+        StatusFilter.Clue -> "发现线索"
+        StatusFilter.Clear -> "未发现线索"
+        StatusFilter.Restricted -> "无法检查"
+    }
+    return if (group == null) "筛选·$statusText" else "筛选·$statusText·${group.label}"
+}
+
+@Composable
+private fun TopBar(title: String, showBack: Boolean, onBack: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp).padding(end = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (showBack) {
+            Text(
+                "返回",
+                color = Ink,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier.clickable(onClick = onBack).padding(horizontal = 16.dp, vertical = 14.dp),
+            )
+        }
+        Text(
+            title,
+            color = Ink,
+            fontWeight = FontWeight.SemiBold,
+            fontSize = 18.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(start = if (showBack) 0.dp else 16.dp, top = 12.dp, bottom = 12.dp),
+        )
     }
 }
 
 @Composable
-private fun ConclusionCard(
+private fun HomeList(
     report: ProbeReport?,
     scanning: Boolean,
     error: String?,
+    visible: List<Pair<SignalFinding, RowStatus>>,
+    totals: List<RowStatus>,
+    query: String,
+    onQuery: (String) -> Unit,
+    filterLabel: String,
+    onFilter: () -> Unit,
     onRescan: () -> Unit,
     onExport: () -> Unit,
+    collapsed: Set<UiGroup>,
+    onToggle: (UiGroup) -> Unit,
+    listState: LazyListState,
+    onOpen: (String) -> Unit,
+    scanningStatus: Boolean,
 ) {
-    val tone = report?.verdict.tone()
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(18.dp))
-            .background(tone.background)
-            .padding(16.dp),
-    ) {
-        Text("核心结论", color = tone.accent, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-        Spacer(Modifier.height(6.dp))
-        Text(
-            text = when {
-                error != null -> "这次扫描没有完成"
-                report == null -> "正在采集五维信号"
-                else -> report.conclusionTitleZh
-            },
-            color = Ink,
-            fontSize = 22.sp,
-            fontWeight = FontWeight.SemiBold,
-            lineHeight = 30.sp,
-        )
-        Spacer(Modifier.height(8.dp))
-        Text(
-            text = error ?: report?.conclusionSummaryZh ?: "模拟器、容器、虚拟屏、硬件一致性和输入来源会一起汇总。",
-            color = Ink,
-            fontSize = 14.sp,
-            lineHeight = 21.sp,
-        )
-        if (scanning) {
-            Spacer(Modifier.height(12.dp))
-            LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = tone.accent, trackColor = Color.White.copy(alpha = 0.6f))
-        }
-        if (report != null) {
-            Spacer(Modifier.height(14.dp))
-            Row(verticalAlignment = Alignment.Bottom) {
-                Text(report.riskScore.toString(), fontSize = 40.sp, fontWeight = FontWeight.Bold, color = tone.accent)
-                Spacer(Modifier.width(8.dp))
-                Text("综合风险分 · ${report.riskBandZh}", color = Muted, modifier = Modifier.padding(bottom = 8.dp))
+    Column(Modifier.fillMaxSize()) {
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+                when {
+                    error != null -> "这次扫描没有完成"
+                    scanning || report == null -> "正在扫描本机环境。"
+                    else -> report.conclusionTitleZh
+                },
+                color = Ink,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 18.sp,
+            )
+            Text(
+                text = error ?: if (scanning || report == null) {
+                    "正在读取属性、文件和输入设备。"
+                } else {
+                    "已检查 ${totals.size} · 线索 ${totals.count { it == RowStatus.Clue }} · 未发现 ${totals.count { it == RowStatus.Clear }} · 无法检查 ${totals.count { it == RowStatus.Restricted }}"
+                },
+                color = Muted,
+                fontSize = 13.sp,
+            )
+            if (!scanning && report != null && error == null) {
+                Text(oneSentence(report.conclusionSummaryZh, 88), color = Ink, fontSize = 14.sp, lineHeight = 20.sp)
             }
-            Text(report.scoreBreakdownZh, color = Muted, fontSize = 12.sp)
-        }
-        Spacer(Modifier.height(14.dp))
-        Row {
+            if (scanning) {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = Ink, trackColor = Line)
+            }
             Button(
                 onClick = onRescan,
                 enabled = !scanning,
-                colors = ButtonDefaults.buttonColors(containerColor = tone.accent, contentColor = Color.White),
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(containerColor = Ink, contentColor = Color.White, disabledContainerColor = Line, disabledContentColor = Muted),
             ) { Text(if (scanning) "扫描中" else "重新扫描") }
-            Spacer(Modifier.width(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = onQuery,
+                    modifier = Modifier.weight(1f),
+                    singleLine = true,
+                    placeholder = { Text("搜索检查名称") },
+                )
+                TextButton(onClick = onFilter) { Text(filterLabel, color = Ink) }
+            }
             TextButton(onClick = onExport, enabled = report != null) { Text("导出 JSON") }
         }
-    }
-}
-
-@Composable
-private fun CategoryRow(summaries: List<ModuleSummary>, selected: SignalCategory?, onSelect: (SignalCategory) -> Unit) {
-    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        items(summaries) { summary ->
-            val tone = summary.tone()
-            val active = selected == summary.category
-            Column(
-                modifier = Modifier
-                    .width(148.dp)
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(if (active) tone.background else Card)
-                    .border(1.dp, if (active) tone.accent else Line, RoundedCornerShape(14.dp))
-                    .clickable { onSelect(summary.category) }
-                    .padding(12.dp),
-            ) {
-                Text(summary.category.titleZh, color = Ink, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, maxLines = 2)
-                Spacer(Modifier.height(8.dp))
-                Text(summary.statusZh, color = tone.accent, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+        if (!scanning && visible.isEmpty()) {
+            Text("没有相符项。可清空搜索或改回全部。", color = Muted, modifier = Modifier.padding(16.dp))
+        } else {
+            LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+                UiGroup.entries.forEach { group ->
+                    val groupRows = visible.filter { groupOf(it.first) == group }
+                    if (groupRows.isEmpty()) return@forEach
+                    item(key = "group-$group") {
+                        val clues = groupRows.count { it.second == RowStatus.Clue }
+                        val open = group !in collapsed
+                        Column(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable { onToggle(group) }
+                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                        ) {
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text(group.label, color = Ink, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                                Text(
+                                    "${if (open) "收起" else "展开"} · ${groupRows.size}" + if (clues > 0) " · 线索 $clues" else "",
+                                    color = Muted,
+                                    fontSize = 12.sp,
+                                )
+                            }
+                        }
+                    }
+                    if (group !in collapsed) {
+                        items(groupRows, key = { it.first.signalId }) { (finding, status) ->
+                            val shown = if (scanningStatus) RowStatus.Pending else status
+                            Column(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .clickable { onOpen(finding.signalId) }
+                                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                            ) {
+                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                    Text(finding.titleZh, color = Ink, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f), maxLines = 2)
+                                    Text(shown.label, color = shown.color(), fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                                }
+                                Text(oneSentence(finding.summaryZh, 48), color = Muted, fontSize = 13.sp, maxLines = 2)
+                            }
+                        }
+                    }
+                }
             }
         }
     }
 }
 
+private fun RowStatus.color(): Color = when (this) {
+    RowStatus.Clue -> Clue
+    RowStatus.Restricted -> Restricted
+    RowStatus.Pending -> Muted
+    RowStatus.Clear -> Muted
+}
+
 @Composable
-private fun FilterRow(
-    anomaliesOnly: Boolean,
-    anomalyCount: Int,
-    checkCount: Int,
-    onAnomalies: () -> Unit,
-    onAll: () -> Unit,
+private fun DetailPage(
+    finding: SignalFinding,
+    scanning: Boolean,
+    indexLabel: String,
+    hasPrev: Boolean,
+    hasNext: Boolean,
+    onPrev: () -> Unit,
+    onNext: () -> Unit,
 ) {
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-        ChoiceChip("仅看异常", anomaliesOnly, onAnomalies)
-        Spacer(Modifier.width(8.dp))
-        ChoiceChip("全部项目", !anomaliesOnly, onAll)
-        Spacer(Modifier.weight(1f))
-        Text("$anomalyCount 项异常 / $checkCount 项", color = Muted, fontSize = 12.sp)
+    var tech by remember(finding.signalId) { mutableStateOf(false) }
+    val status = if (scanning) RowStatus.Pending else rowStatus(finding)
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text("${groupOf(finding).label} · ${finding.signalId}", color = Muted, fontSize = 12.sp)
+        Text(status.label, color = status.color(), fontWeight = FontWeight.Medium)
+        if (scanning) {
+            Text("正在扫描，当前项待检测。", color = Muted)
+        } else {
+            Field("结论", oneSentence(finding.summaryZh))
+            Field("实际值", briefActual(finding.observedDataZh))
+            Field("参考值", oneSentence(finding.expectedBaselineZh))
+            Field("建议", oneSentence(finding.recommendationZh))
+        }
+        TextButton(onClick = { tech = !tech }, modifier = Modifier.fillMaxWidth()) {
+            Text(if (tech) "收起技术详情" else "技术详情", color = Ink)
+        }
+        if (tech) {
+            Text("来源", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            Text(finding.sourceAttribution, color = Ink, fontSize = 13.sp)
+            Text("局限", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            Text(
+                if (status == RowStatus.Restricted) "读不到或被拒绝是未知，不是未发现线索。"
+                else "未命中不能单独证明环境正常。线索也不等于恶意。",
+                color = Ink,
+                fontSize = 13.sp,
+            )
+            Text("原始证据", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            Text(finding.observedDataZh, color = Ink, fontSize = 13.sp, lineHeight = 18.sp)
+            Text(finding.expectedBaselineZh, color = Muted, fontSize = 12.sp, lineHeight = 18.sp)
+            finding.rawEvidence.forEach { (key, value) ->
+                Text("$key = ${value.ifBlank { "（空）" }}", fontFamily = FontFamily.Monospace, fontSize = 12.sp, color = Ink)
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = onPrev, enabled = hasPrev) { Text("上一项") }
+            TextButton(onClick = onNext, enabled = hasNext) { Text("下一项") }
+            if (indexLabel.isNotBlank()) Text(indexLabel, color = Muted, fontSize = 12.sp)
+        }
     }
 }
 
 @Composable
-private fun ChoiceChip(label: String, selected: Boolean, onClick: () -> Unit) {
-    Text(
-        text = label,
-        color = if (selected) Color.White else Ink,
-        fontSize = 13.sp,
-        modifier = Modifier
-            .clip(RoundedCornerShape(999.dp))
-            .background(if (selected) Ink else Card)
-            .border(1.dp, if (selected) Ink else Line, RoundedCornerShape(999.dp))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-    )
+private fun Field(label: String, body: String) {
+    Column {
+        Text(label, color = Muted, fontSize = 12.sp)
+        Text(body, color = Ink, fontSize = 16.sp, lineHeight = 22.sp)
+    }
 }
 
 @Composable
-private fun InputPlayground(trace: InputNarrative?) {
+private fun InputPage(trace: InputNarrative?) {
     var draft by remember { mutableStateOf("") }
-    val tone = if (trace?.suspicious == true) ToneBad else if (trace == null) ToneNeutral else ToneGood
+    var tech by remember { mutableStateOf(false) }
     Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
-            .background(Card)
-            .border(1.dp, Line, RoundedCornerShape(16.dp))
-            .padding(14.dp),
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Text("试试这次输入从哪来", fontWeight = FontWeight.SemiBold, color = Ink)
-        Text("点页面任意位置、在下面输入一个字，都会立刻给出结论。不需要额外配置。", color = Muted, fontSize = 13.sp)
-        Spacer(Modifier.height(10.dp))
+        Text("只看这次点击和按键。不能证明来自物理手指。", color = Muted, fontSize = 13.sp)
         Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(72.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .background(Paper)
-                .border(1.dp, Line, RoundedCornerShape(12.dp)),
+            modifier = Modifier.fillMaxWidth().height(72.dp).clip(RoundedCornerShape(12.dp)).background(Card).border(1.dp, Line, RoundedCornerShape(12.dp)),
             contentAlignment = Alignment.Center,
-        ) {
-            Text("在这一带点击或滑动", color = Muted)
-        }
-        Spacer(Modifier.height(8.dp))
+        ) { Text("在这一带点击或滑动", color = Muted) }
         OutlinedTextField(
             value = draft,
             onValueChange = { draft = it },
             modifier = Modifier.fillMaxWidth(),
-            placeholder = { Text("在这里打字，查看按键来源") },
             singleLine = true,
+            placeholder = { Text("在这里打字") },
         )
-        Spacer(Modifier.height(10.dp))
-        Text(trace?.verdictZh ?: "还没有输入事件", color = tone.accent, fontWeight = FontWeight.SemiBold)
-        if (trace != null) {
-            NarrativeBlock("实测事件数据", trace.observedDataZh)
-            NarrativeBlock("对照基线（不是证明）", trace.expectedBaselineZh)
-            NarrativeBlock("建议", trace.recommendationZh)
-        }
-    }
-}
-
-@Composable
-private fun EmptyState(anomaliesOnly: Boolean) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
-            .background(GoodBg)
-            .padding(16.dp),
-    ) {
-        Text(
-            if (anomaliesOnly) "这次没有要优先看的异常项" else "当前筛选下没有检查项",
-            color = Good,
-            fontWeight = FontWeight.SemiBold,
-        )
-        Text(
-            if (anomaliesOnly) "需要对照每条基线时，切换到「全部项目」。低敏提示仍算异常，会留在这个列表里。" else "换一个维度，或回到仅看异常。",
-            color = Ink,
-            fontSize = 14.sp,
-        )
-    }
-}
-
-@Composable
-private fun FindingCard(finding: SignalFinding) {
-    var open by remember(finding.signalId) { mutableStateOf(false) }
-    val tone = if (!finding.detected) ToneGood else finding.severity.tone()
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
-            .background(Card)
-            .border(1.dp, Line, RoundedCornerShape(16.dp))
-            .padding(14.dp),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                if (finding.detected) finding.severity.labelZh else "正常",
-                color = tone.accent,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(999.dp))
-                    .background(tone.background)
-                    .padding(horizontal = 8.dp, vertical = 3.dp),
-            )
-            Spacer(Modifier.width(8.dp))
-            Text(finding.category.titleZh, color = Muted, fontSize = 12.sp)
-        }
-        Spacer(Modifier.height(8.dp))
-        Text(finding.titleZh, color = Ink, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
-        Text(finding.summaryZh, color = Muted, fontSize = 13.sp)
-        NarrativeBlock("检测到的数据", finding.observedDataZh)
-        NarrativeBlock("正常应该是什么", finding.expectedBaselineZh)
-        NarrativeBlock("处理建议", finding.recommendationZh)
-        TextButton(onClick = { open = !open }) {
-            Text(if (open) "收起底层原始证据" else "查看底层原始证据")
-        }
-        if (open) {
-            Text(finding.sourceAttribution, color = Muted, fontSize = 12.sp, lineHeight = 18.sp)
-            Spacer(Modifier.height(6.dp))
-            if (finding.rawEvidence.isEmpty()) {
-                Text("这条检查没有额外键值。", color = Muted, fontSize = 12.sp)
-            } else {
-                finding.rawEvidence.forEach { (key, value) ->
-                    Text("$key = ${value.ifBlank { "（空）" }}", fontFamily = FontFamily.Monospace, fontSize = 12.sp, color = Ink)
+        if (trace == null) {
+            Text("还没有输入事件", color = Muted)
+        } else {
+            val status = if (trace.suspicious) "发现线索" else "未发现线索"
+            Text(status, color = if (trace.suspicious) Clue else Muted, fontWeight = FontWeight.Medium)
+            Field("结论", oneSentence(trace.verdictZh))
+            Field("实际值", oneSentence(trace.observedDataZh))
+            Field("参考值", oneSentence(trace.expectedBaselineZh))
+            Field("建议", oneSentence(trace.recommendationZh))
+            TextButton(onClick = { tech = !tech }) { Text(if (tech) "收起技术详情" else "技术详情", color = Ink) }
+            if (tech) {
+                Text(trace.observedDataZh, color = Ink, fontSize = 13.sp)
+                trace.findings.forEach { finding ->
+                    Text("${finding.signalId} ${finding.summaryZh}", color = Muted, fontSize = 12.sp)
                 }
             }
         }
@@ -420,11 +628,88 @@ private fun FindingCard(finding: SignalFinding) {
 }
 
 @Composable
-private fun NarrativeBlock(label: String, body: String) {
-    Column(modifier = Modifier.padding(top = 8.dp)) {
-        Text(label, color = Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-        Text(body, color = Ink, fontSize = 14.sp, lineHeight = 20.sp)
+private fun BottomNav(page: Page, onSelect: (Page) -> Unit) {
+    Row(Modifier.fillMaxWidth().background(Card)) {
+        NavKey("检测", page == Page.Home) { onSelect(Page.Home) }
+        NavKey("输入体验", page == Page.Input) { onSelect(Page.Input) }
     }
+}
+
+@Composable
+private fun androidx.compose.foundation.layout.RowScope.NavKey(label: String, selected: Boolean, onClick: () -> Unit) {
+    Text(
+        label,
+        color = if (selected) Ink else Muted,
+        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+        modifier = Modifier.weight(1f).clickable(onClick = onClick).padding(vertical = 16.dp),
+        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+    )
+}
+
+@Composable
+private fun FilterSheet(
+    statusFilter: StatusFilter,
+    groupFilter: UiGroup?,
+    counts: Map<RowStatus, Int>,
+    total: Int,
+    onStatus: (StatusFilter) -> Unit,
+    onGroup: (UiGroup?) -> Unit,
+    onReset: () -> Unit,
+    onClose: () -> Unit,
+) {
+    Box(Modifier.fillMaxSize()) {
+        Box(Modifier.fillMaxSize().background(Color(0x99000000)).clickable(onClick = onClose))
+        Column(
+            Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .heightIn(max = 560.dp)
+                .background(Card)
+                .navigationBarsPadding()
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text("筛选", color = Ink, fontWeight = FontWeight.SemiBold, fontSize = 18.sp)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                Button(onClick = onReset, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = Paper, contentColor = Ink)) {
+                    Text("重置筛选")
+                }
+                Button(onClick = onClose, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = Ink, contentColor = Color.White)) {
+                    Text("完成")
+                }
+            }
+            Text("状态", color = Muted, fontSize = 12.sp)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                Chip("全部 $total", statusFilter == StatusFilter.All) { onStatus(StatusFilter.All) }
+                Chip("发现线索 ${counts[RowStatus.Clue] ?: 0}", statusFilter == StatusFilter.Clue) { onStatus(StatusFilter.Clue) }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Chip("未发现线索 ${counts[RowStatus.Clear] ?: 0}", statusFilter == StatusFilter.Clear) { onStatus(StatusFilter.Clear) }
+                Chip("无法检查 ${counts[RowStatus.Restricted] ?: 0}", statusFilter == StatusFilter.Restricted) { onStatus(StatusFilter.Restricted) }
+            }
+            Text("分组", color = Muted, fontSize = 12.sp)
+            Chip("全部分组", groupFilter == null) { onGroup(null) }
+            UiGroup.entries.forEach { group ->
+                Chip(group.label, groupFilter == group) { onGroup(group) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun Chip(label: String, selected: Boolean, onClick: () -> Unit) {
+    Text(
+        label,
+        color = if (selected) Color.White else Ink,
+        fontSize = 13.sp,
+        modifier = Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(if (selected) Ink else Paper)
+            .border(1.dp, if (selected) Ink else Line, RoundedCornerShape(999.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+    )
 }
 
 @Composable
@@ -454,34 +739,4 @@ private fun JsonDialog(json: String, onDismiss: () -> Unit) {
             )
         },
     )
-}
-
-private data class Tone(val accent: Color, val background: Color)
-
-private val ToneGood = Tone(Good, GoodBg)
-private val ToneWarn = Tone(Warn, WarnBg)
-private val ToneBad = Tone(Bad, BadBg)
-private val ToneNeutral = Tone(Muted, Paper)
-
-private fun EnvironmentVerdict?.tone(): Tone = when (this) {
-    null -> ToneNeutral
-    EnvironmentVerdict.REAL_DEVICE -> ToneGood
-    EnvironmentVerdict.SUSPICIOUS -> ToneWarn
-    EnvironmentVerdict.EMULATOR_OR_VM,
-    EnvironmentVerdict.VIRTUAL_CONTAINER,
-    EnvironmentVerdict.VIRTUALIZED_ENVIRONMENT,
-    -> ToneBad
-    EnvironmentVerdict.RUNTIME_CLUE -> ToneWarn
-}
-
-private fun ModuleSummary.tone(): Tone = when {
-    !enabled -> ToneNeutral
-    mediumOrAboveCount > 0 -> ToneBad
-    anomalyCount > 0 -> ToneWarn
-    else -> ToneGood
-}
-
-private fun Severity.tone(): Tone = when (this) {
-    Severity.INFO, Severity.LOW, Severity.MEDIUM -> ToneWarn
-    Severity.HIGH, Severity.CRITICAL -> ToneBad
 }

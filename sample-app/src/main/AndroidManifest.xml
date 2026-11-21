@@ -3,7 +3,7 @@
     <uses-permission android:name="android.permission.DETECT_SCREEN_CAPTURE" />
     <application
         android:allowBackup="false"
-        android:label="虚拟环境探针"
+        android:label="异常信号检测器"
         android:supportsRtl="true"
         android:theme="@style/Theme.VirtProbe">
         <activity
