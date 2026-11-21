@@ -41,9 +41,11 @@ internal object InputCollector {
     }
 
     private fun devices(): List<InputDeviceFact> {
-        return InputDevice.getDeviceIds().mapNotNull { id ->
-            val device = InputDevice.getDevice(id) ?: return@mapNotNull null
-            InputDeviceFact(
+        val ids = InputDevice.getDeviceIds()
+        val out = ArrayList<InputDeviceFact>(ids.size)
+        for (index in ids.indices) {
+            val device = InputDevice.getDevice(ids[index]) ?: continue
+            out += InputDeviceFact(
                 id = device.id,
                 name = device.name.orEmpty(),
                 descriptor = device.descriptor.orEmpty(),
@@ -54,6 +56,7 @@ internal object InputCollector {
                 sources = device.sources,
             )
         }
+        return out
     }
 
     private fun external(device: InputDevice): Boolean {

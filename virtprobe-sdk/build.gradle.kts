@@ -6,6 +6,7 @@ plugins {
 android {
     namespace = "io.virtprobe.sdk"
     compileSdk = 35
+    ndkVersion = "27.2.12479018"
 
     defaultConfig {
         minSdk = 24

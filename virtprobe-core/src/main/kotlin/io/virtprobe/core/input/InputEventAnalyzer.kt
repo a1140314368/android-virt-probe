@@ -47,7 +47,7 @@ object InputEventAnalyzer {
         return narrate(
             findings = findings,
             measured = motionMeasured(sample),
-            cleanVerdict = "本次输入更接近物理硬件来源",
+            cleanVerdict = "本次输入未看到明显注入特征。这是启发式判断，不能证明来自物理手指。",
             mildVerdict = "本次输入带有低敏特征，还不能单独定性为注入",
             suspiciousVerdict = "本次输入疑似虚拟注入或自动化",
         )
@@ -58,7 +58,7 @@ object InputEventAnalyzer {
         return narrate(
             findings = findings,
             measured = keyMeasured(sample),
-            cleanVerdict = "本次按键更接近物理硬件来源",
+            cleanVerdict = "本次按键未看到明显注入特征。这是启发式判断，不能证明来自物理键盘。",
             mildVerdict = if (softKeyboard) "本次按键来自系统软键盘（虚拟设备），未见注入特征" else "本次按键带有低敏特征",
             suspiciousVerdict = "本次按键疑似虚拟注入或自动化",
         )

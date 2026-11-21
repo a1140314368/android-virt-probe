@@ -132,6 +132,11 @@ fun VirtProbeScreen() {
                 item {
                     Text("虚拟环境探针", fontSize = 13.sp, color = Muted, fontWeight = FontWeight.Medium)
                     Text("先看结论，再看是哪一类出了问题", fontSize = 22.sp, fontWeight = FontWeight.SemiBold, color = Ink)
+                    Text(
+                        "信号是启发式的：未命中不能证明真机，模拟器或 adb 注入也不能证明物理手指。",
+                        fontSize = 13.sp,
+                        color = Muted,
+                    )
                 }
                 item {
                     ConclusionCard(
@@ -332,7 +337,7 @@ private fun InputPlayground(trace: InputNarrative?) {
         Text(trace?.verdictZh ?: "还没有输入事件", color = tone.accent, fontWeight = FontWeight.SemiBold)
         if (trace != null) {
             NarrativeBlock("实测事件数据", trace.observedDataZh)
-            NarrativeBlock("真机应有特征", trace.expectedBaselineZh)
+            NarrativeBlock("对照基线（不是证明）", trace.expectedBaselineZh)
             NarrativeBlock("建议", trace.recommendationZh)
         }
     }

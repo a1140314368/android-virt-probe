@@ -44,7 +44,7 @@ object ReportComposer {
     }
 
     fun titleOf(verdict: EnvironmentVerdict): String = when (verdict) {
-        EnvironmentVerdict.REAL_DEVICE -> "未发现明显虚拟环境异常，符合真机基线"
+        EnvironmentVerdict.REAL_DEVICE -> "未发现明显虚拟环境异常"
         EnvironmentVerdict.SUSPICIOUS -> "发现可疑虚拟环境信号，建议结合业务做二次校验"
         EnvironmentVerdict.EMULATOR_OR_VM -> "高概率运行于模拟器或虚拟机环境"
         EnvironmentVerdict.VIRTUAL_CONTAINER -> "高概率运行于应用内虚拟化容器或多开分身"
@@ -53,7 +53,7 @@ object ReportComposer {
 
     private fun summaryOfVerdict(verdict: EnvironmentVerdict, anomalies: List<SignalFinding>): String {
         if (anomalies.isEmpty()) {
-            return "五大维度均未命中异常。当前采集结果与真实物理手机基线一致，可按正常设备继续业务。"
+            return "五大维度均未命中已知异常信号。未命中不能单独证明这是真实物理手机，只说明这次采集没有看到已覆盖的虚拟化特征。"
         }
         val counted = SignalCategory.entries.mapNotNull { category ->
             val count = anomalies.count { it.category == category }

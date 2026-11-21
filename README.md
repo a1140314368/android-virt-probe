@@ -77,7 +77,7 @@ flowchart TB
 | --- | --- |
 | `verdict` | `REAL_DEVICE` / `SUSPICIOUS` / `EMULATOR_OR_VM` / `VIRTUAL_CONTAINER` / `VIRTUALIZED_ENVIRONMENT` |
 | `riskScore` | 0 到 100。只累计命中项，多维度互相印证时加分 |
-| `conclusionTitleZh` | 例如「高概率运行于虚拟/模拟器环境」或「未发现明显虚拟环境异常，符合真机基线」 |
+| `conclusionTitleZh` | 例如「高概率运行于虚拟/模拟器环境」或「未发现明显虚拟环境异常」。未命中不能单独证明是真机 |
 | `conclusionSummaryZh` | 命中了哪几类，以及当前最该看的建议 |
 | `moduleSummaries` | 五个维度的「正常 / 低敏提示 N 项 / 命中 N 项异常 / 未启用」 |
 
@@ -196,6 +196,8 @@ window.callback = VirtProbeWindowCallback(window.callback) { trace ->
 
 val watch = VirtProbe.attachScreenCaptureWatch(activity)
 ```
+
+Android 14 及以上注册屏幕采集回调需要清单里的普通权限 `android.permission.DETECT_SCREEN_CAPTURE`。SDK 清单已经声明。没授予时注册失败只表示回调没挂上，不会把进程打崩，也不会当成正在投屏。
 
 只扫某几维时用 `VirtProbeConfig`。关掉的维度在报告里是「未启用」，不会被算成通过。
 
