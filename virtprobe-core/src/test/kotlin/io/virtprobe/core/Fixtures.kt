@@ -188,10 +188,32 @@ internal fun realInputSnapshot(): InputAuditSnapshot = InputAuditSnapshot(
     instrumentationClassName = "android.app.Instrumentation",
 )
 
+internal fun realRuntimeSnapshot(): io.virtprobe.core.model.RuntimeSnapshot =
+    io.virtprobe.core.model.RuntimeSnapshot(
+        binaryProbes = mapOf(
+            "/system/bin/su" to io.virtprobe.core.model.ProbeVisibility.NOT_VISIBLE,
+            "/system/xbin/su" to io.virtprobe.core.model.ProbeVisibility.NOT_VISIBLE,
+        ),
+        mountState = io.virtprobe.core.model.ProbeVisibility.NOT_VISIBLE,
+        mapsState = io.virtprobe.core.model.ProbeVisibility.NOT_VISIBLE,
+        tracerPid = 0,
+        javaDebuggerConnected = false,
+        selinuxEnforce = "1",
+        securityPatch = "2026-08-01",
+        buildTags = "release-keys",
+        roSecure = "1",
+        roDebuggable = "0",
+        adbEnabled = false,
+        vpnActive = false,
+        httpProxy = "",
+        nowEpochMs = 1_763_600_000_000,
+    )
+
 internal fun realSnapshots(): ProbeSnapshots = ProbeSnapshots(
     emulator = realEmulatorSnapshot(),
     container = realContainerSnapshot(),
     virtualDisplay = realDisplaySnapshot(),
     consistency = realConsistencySnapshot(),
     input = realInputSnapshot(),
+    runtime = realRuntimeSnapshot(),
 )

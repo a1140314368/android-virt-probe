@@ -466,6 +466,7 @@ private fun EnvironmentVerdict?.tone(): Tone = when (this) {
     EnvironmentVerdict.VIRTUAL_CONTAINER,
     EnvironmentVerdict.VIRTUALIZED_ENVIRONMENT,
     -> ToneBad
+    EnvironmentVerdict.RUNTIME_CLUE -> ToneWarn
 }
 
 private fun ModuleSummary.tone(): Tone = when {

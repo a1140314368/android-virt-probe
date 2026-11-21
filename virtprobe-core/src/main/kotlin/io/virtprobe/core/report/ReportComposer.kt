@@ -44,16 +44,17 @@ object ReportComposer {
     }
 
     fun titleOf(verdict: EnvironmentVerdict): String = when (verdict) {
-        EnvironmentVerdict.REAL_DEVICE -> "未发现明显虚拟环境异常"
-        EnvironmentVerdict.SUSPICIOUS -> "发现可疑虚拟环境信号，建议结合业务做二次校验"
-        EnvironmentVerdict.EMULATOR_OR_VM -> "高概率运行于模拟器或虚拟机环境"
-        EnvironmentVerdict.VIRTUAL_CONTAINER -> "高概率运行于应用内虚拟化容器或多开分身"
-        EnvironmentVerdict.VIRTUALIZED_ENVIRONMENT -> "高概率运行于虚拟/模拟器环境"
+        EnvironmentVerdict.REAL_DEVICE -> "未发现明显异常信号"
+        EnvironmentVerdict.SUSPICIOUS -> "发现可疑线索，建议复核"
+        EnvironmentVerdict.EMULATOR_OR_VM -> "疑似模拟器或虚拟机"
+        EnvironmentVerdict.VIRTUAL_CONTAINER -> "疑似应用内虚拟容器"
+        EnvironmentVerdict.VIRTUALIZED_ENVIRONMENT -> "疑似虚拟化环境"
+        EnvironmentVerdict.RUNTIME_CLUE -> "发现提权或注入线索"
     }
 
     private fun summaryOfVerdict(verdict: EnvironmentVerdict, anomalies: List<SignalFinding>): String {
         if (anomalies.isEmpty()) {
-            return "五大维度均未命中已知异常信号。未命中不能单独证明这是真实物理手机，只说明这次采集没有看到已覆盖的虚拟化特征。"
+            return "未命中已知信号。未命中不能单独证明环境正常。"
         }
         val counted = SignalCategory.entries.mapNotNull { category ->
             val count = anomalies.count { it.category == category }
@@ -62,11 +63,11 @@ object ReportComposer {
         val top = anomalies.maxBy { it.severity.ordinal }
         val lowOnly = anomalies.all { it.severity == Severity.LOW }
         val lead = if (verdict == EnvironmentVerdict.REAL_DEVICE && lowOnly) {
-            "存在 ${anomalies.size} 项低敏提示（${counted.joinToString("、")}），未构成模拟器、容器或跨层篡改证据。"
+            "低敏提示 ${anomalies.size} 项。不足以说明环境异常。"
         } else {
-            "已命中${counted.joinToString("、")}。其中最需要先看的是「${top.titleZh}」。"
+            "已命中 ${counted.joinToString("、")}。优先看「${top.titleZh}」。"
         }
-        return "$lead${top.recommendationZh}"
+        return lead + top.recommendationZh
     }
 
     private fun summaryOf(category: SignalCategory, findings: List<SignalFinding>, enabled: Boolean): ModuleSummary {

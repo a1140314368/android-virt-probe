@@ -15,6 +15,7 @@ import io.virtprobe.sdk.collect.ContainerCollector
 import io.virtprobe.sdk.collect.DisplayCollector
 import io.virtprobe.sdk.collect.EmulatorCollector
 import io.virtprobe.sdk.collect.InputCollector
+import io.virtprobe.sdk.collect.RuntimeCollector
 import io.virtprobe.sdk.input.InputEventMonitor
 import io.virtprobe.sdk.input.ScreenCaptureWatch
 import io.virtprobe.sdk.native.NativeBridge
@@ -71,6 +72,7 @@ object VirtProbe {
                 null
             },
             input = if (config.enableInput) runCatching { InputCollector.collect(app, native) }.getOrNull() else null,
+            runtime = if (config.enableRuntime) runCatching { RuntimeCollector.collect(app, native) }.getOrNull() else null,
             liveInputFindings = if (config.includeRecentInput) monitor.latestDetected() else emptyList(),
         )
         return ProbeEngine.evaluate(
@@ -81,6 +83,7 @@ object VirtProbe {
                 enableVirtualDisplay = config.enableVirtualDisplay,
                 enableConsistency = config.enableConsistency,
                 enableInput = config.enableInput,
+                enableRuntime = config.enableRuntime,
             ),
         )
     }

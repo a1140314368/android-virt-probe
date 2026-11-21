@@ -1,0 +1,117 @@
+// SPDX-License-Identifier: Apache-2.0
+package io.virtprobe.sdk.collect
+
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.os.Build
+import android.os.Debug
+import android.provider.Settings
+import io.virtprobe.core.model.ProbeVisibility
+import io.virtprobe.core.model.RuntimeSnapshot
+import io.virtprobe.sdk.native.NativeEvidence
+import java.io.File
+
+internal object RuntimeCollector {
+    private val binaries = listOf(
+        "/system/bin/su",
+        "/system/xbin/su",
+        "/sbin/su",
+        "/debug_ramdisk/su",
+        "/debug_ramdisk/magisk",
+        "/data/adb/magisk",
+        "/data/adb/ksu",
+        "/data/adb/ap",
+    )
+    private val mountMarkers = listOf("magisk", "zygisk", "/data/adb/ksu", "/data/adb/ap", "/data/adb/modules")
+    private val mapMarkers = listOf("frida-agent", "frida-gadget", "libfrida", "zygisk", "libriru", "libxposed", "lspd")
+    private val packages = listOf(
+        "com.topjohnwu.magisk",
+        "me.weishu.kernelsu",
+        "me.bmax.apatch",
+        "org.lsposed.manager",
+        "de.robv.android.xposed.installer",
+    )
+
+    fun collect(context: Context, native: NativeEvidence): RuntimeSnapshot {
+        val mounts = textOrDenied(native.mountinfo, native.mountinfoError, "/proc/self/mountinfo")
+        val maps = textOrDenied(native.maps, native.mapsError, "/proc/self/maps")
+        val status = AndroidSignals.readText("/proc/self/status", 16 * 1024)
+        val enforce = AndroidSignals.readText("/sys/fs/selinux/enforce", 16)
+        return RuntimeSnapshot(
+            binaryProbes = binaries.associateWith { probe(it) },
+            mountHits = hits(mounts.first, mountMarkers),
+            mountState = mounts.second,
+            mapHits = hits(maps.first, mapMarkers),
+            mapsState = maps.second,
+            tracerPid = tracer(status),
+            javaDebuggerConnected = runCatching { Debug.isDebuggerConnected() }.getOrNull(),
+            selinuxEnforce = enforce.first.trim().ifBlank { null },
+            securityPatch = Build.VERSION.SECURITY_PATCH.orEmpty(),
+            buildTags = native.properties["ro.build.tags"].orEmpty().ifBlank { Build.TAGS.orEmpty() },
+            roSecure = native.properties["ro.secure"].orEmpty(),
+            roDebuggable = native.properties["ro.debuggable"].orEmpty(),
+            adbEnabled = globalFlag(context, "adb_enabled"),
+            vpnActive = vpn(context),
+            httpProxy = proxy(context),
+            cluePackages = AndroidSignals.installed(context, packages),
+            nowEpochMs = System.currentTimeMillis(),
+        )
+    }
+
+    private fun probe(path: String): ProbeVisibility = try {
+        if (File(path).exists()) ProbeVisibility.PRESENT else ProbeVisibility.NOT_VISIBLE
+    } catch (_: SecurityException) {
+        ProbeVisibility.DENIED
+    }
+
+    private fun textOrDenied(nativeText: String, nativeError: String, path: String): Pair<String, ProbeVisibility> {
+        if (nativeText.isNotBlank()) return nativeText to ProbeVisibility.PRESENT
+        if (nativeError.contains("EACCES", ignoreCase = true) || nativeError.contains("Permission", ignoreCase = true)) {
+            return "" to ProbeVisibility.DENIED
+        }
+        val java = AndroidSignals.readText(path, 64 * 1024)
+        return when {
+            java.first.isNotBlank() -> java.first to ProbeVisibility.PRESENT
+            java.second?.contains("EACCES", ignoreCase = true) == true -> "" to ProbeVisibility.DENIED
+            else -> "" to ProbeVisibility.NOT_VISIBLE
+        }
+    }
+
+    private fun hits(text: String, markers: List<String>): List<String> {
+        if (text.isBlank()) return emptyList()
+        val lower = text.lowercase()
+        return markers.filter { lower.contains(it) }
+    }
+
+    private fun tracer(status: Pair<String, String?>): Int? {
+        val line = status.first.lineSequence().firstOrNull { it.startsWith("TracerPid", ignoreCase = true) } ?: return null
+        return line.substringAfter(':').trim().toIntOrNull()
+    }
+
+    private fun globalFlag(context: Context, key: String): Boolean? = try {
+        Settings.Global.getInt(context.contentResolver, key, -1).let { if (it < 0) null else it == 1 }
+    } catch (_: Throwable) {
+        null
+    }
+
+    private fun vpn(context: Context): Boolean? = try {
+        val cm = context.getSystemService(ConnectivityManager::class.java) ?: return null
+        cm.allNetworks.any { network ->
+            cm.getNetworkCapabilities(network)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
+        }
+    } catch (_: Throwable) {
+        null
+    }
+
+    private fun proxy(context: Context): String? {
+        val host = System.getProperty("http.proxyHost").orEmpty()
+        val port = System.getProperty("http.proxyPort").orEmpty()
+        if (host.isNotBlank()) return if (port.isBlank()) host else "$host:$port"
+        return try {
+            Settings.Global.getString(context.contentResolver, "http_proxy")
+        } catch (_: Throwable) {
+            null
+        }
+    }
+}

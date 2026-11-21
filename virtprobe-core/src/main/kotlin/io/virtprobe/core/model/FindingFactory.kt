@@ -2,7 +2,7 @@
 package io.virtprobe.core.model
 
 /** 未命中时统一使用的建议，避免每条规则各写一句空话。 */
-const val CLEAN_RECOMMENDATION_ZH: String = "该项符合真机基线，无需额外处置。"
+const val CLEAN_RECOMMENDATION_ZH: String = "此项未形成异常结论。"
 
 /** 高危虚拟环境的通用处置建议。具体规则可以改用更贴场景的句子。 */
 const val BLOCK_SENSITIVE_RECOMMENDATION_ZH: String =
@@ -35,7 +35,12 @@ fun finding(
         summaryZh = summaryZh,
         observedDataZh = observedDataZh,
         expectedBaselineZh = expectedBaselineZh,
-        recommendationZh = if (detected) recommendationZh else CLEAN_RECOMMENDATION_ZH,
+        recommendationZh = when {
+            detected -> recommendationZh
+            recommendationZh.contains("不要") || recommendationZh.contains("漏报") || recommendationZh.contains("未知") ->
+                recommendationZh
+            else -> CLEAN_RECOMMENDATION_ZH
+        },
         rawEvidence = rawEvidence.toSortedMap(),
         sourceAttribution = sourceAttribution,
     )

@@ -31,7 +31,7 @@ class ProbeEngineTest {
     fun realDeviceBaseline() {
         val report = ProbeEngine.evaluate(realSnapshots(), EngineConfig(clockEpochMs = 1_700_000_000_000))
         assertEquals(EnvironmentVerdict.REAL_DEVICE, report.verdict)
-        assertEquals("未发现明显虚拟环境异常", report.conclusionTitleZh)
+        assertEquals("未发现明显异常信号", report.conclusionTitleZh)
         assertTrue(report.conclusionSummaryZh.contains("不能单独证明"))
         assertEquals(0, report.riskScore)
         assertEquals("低", report.riskBandZh)
@@ -40,7 +40,7 @@ class ProbeEngineTest {
         assertTrue(report.findings.size > 40)
         report.findings.forEach { it.assertNarrative() }
         assertTrue(report.moduleSummaries.all { it.enabled && it.statusZh == "正常" })
-        assertTrue(report.conclusionSummaryZh.contains("五大维度"))
+        assertTrue(report.conclusionSummaryZh.contains("未命中"))
     }
 
     @Test
@@ -98,7 +98,7 @@ class ProbeEngineTest {
 
         val report = ProbeEngine.evaluate(ProbeSnapshots(emulator = snapshot), EngineConfig(clockEpochMs = 7))
         assertEquals(EnvironmentVerdict.EMULATOR_OR_VM, report.verdict)
-        assertEquals("高概率运行于模拟器或虚拟机环境", report.conclusionTitleZh)
+        assertEquals("疑似模拟器或虚拟机", report.conclusionTitleZh)
         assertTrue(report.riskScore in 50..100)
     }
 
@@ -122,7 +122,7 @@ class ProbeEngineTest {
         )
         val report = ProbeEngine.evaluate(ProbeSnapshots(container = snapshot), EngineConfig(clockEpochMs = 8))
         assertEquals(EnvironmentVerdict.VIRTUAL_CONTAINER, report.verdict)
-        assertEquals("高概率运行于应用内虚拟化容器或多开分身", report.conclusionTitleZh)
+        assertEquals("疑似应用内虚拟容器", report.conclusionTitleZh)
         val data = report.findings.single { it.signalId == "ctn.path.data" }
         assertEquals(Severity.CRITICAL, data.severity)
         assertTrue(data.observedDataZh.contains("com.lbe.parallel.intl"))
@@ -148,7 +148,7 @@ class ProbeEngineTest {
             EngineConfig(clockEpochMs = 9),
         )
         assertEquals(EnvironmentVerdict.VIRTUALIZED_ENVIRONMENT, report.verdict)
-        assertEquals("高概率运行于虚拟/模拟器环境", report.conclusionTitleZh)
+        assertEquals("疑似虚拟化环境", report.conclusionTitleZh)
         assertTrue(report.scoreBreakdownZh.contains("跨维度印证加分"))
         assertTrue(report.riskScore > 50)
     }
@@ -320,7 +320,7 @@ class ProbeEngineTest {
         )
         val text = withQuote.toPrettyJson()
         val json = JSONObject(text)
-        assertEquals("未发现明显虚拟环境异常", json.getString("conclusionTitleZh"))
+        assertEquals("未发现明显异常信号", json.getString("conclusionTitleZh"))
         assertTrue(json.getString("conclusionSummaryZh").contains("不能单独证明"))
         assertTrue(json.getString("conclusionSummaryZh").isNotBlank())
         val findings = json.getJSONArray("findings")
@@ -373,7 +373,12 @@ class ProbeEngineTest {
         if (!detected) {
             assertEquals(Severity.INFO, severity, signalId)
             assertEquals(0.0, confidence, signalId)
-            assertEquals(CLEAN_RECOMMENDATION_ZH, recommendationZh, signalId)
+            val keepsLimitation = recommendationZh.contains("漏报") ||
+                recommendationZh.contains("不要") ||
+                recommendationZh.contains("未知")
+            if (!keepsLimitation) {
+                assertEquals(CLEAN_RECOMMENDATION_ZH, recommendationZh, signalId)
+            }
         }
     }
 }

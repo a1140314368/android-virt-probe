@@ -23,7 +23,10 @@ object CorrelationEngine {
             .toSet()
 
         if (emulatorStrong && containerStrong) return EnvironmentVerdict.VIRTUALIZED_ENVIRONMENT
-        if (activeCategories.size >= 3 && hits.any { it.severity.atLeast(Severity.HIGH) }) {
+        if (activeCategories.size >= 3 &&
+            hits.any { it.severity.atLeast(Severity.HIGH) } &&
+            (emulatorStrong || containerStrong)
+        ) {
             return EnvironmentVerdict.VIRTUALIZED_ENVIRONMENT
         }
         if (emulatorStrong || countAtLeast(hits, SignalCategory.EMULATOR, Severity.MEDIUM) >= 3) {
@@ -32,6 +35,7 @@ object CorrelationEngine {
         if (containerStrong || countAtLeast(hits, SignalCategory.CONTAINER, Severity.MEDIUM) >= 2) {
             return EnvironmentVerdict.VIRTUAL_CONTAINER
         }
+        if (strong(hits, SignalCategory.RUNTIME)) return EnvironmentVerdict.RUNTIME_CLUE
         val lowCount = hits.count { it.severity == Severity.LOW }
         if (hits.any { it.severity.atLeast(Severity.MEDIUM) } || score >= 25 || lowCount >= 3) {
             return EnvironmentVerdict.SUSPICIOUS

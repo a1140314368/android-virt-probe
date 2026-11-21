@@ -21,6 +21,9 @@ enum class SignalCategory(val titleZh: String) {
 
     /** 输入设备盘点、无障碍自动化与实时事件溯源。 */
     INPUT("输入来源"),
+
+    /** Root、Hook、调试、SELinux、补丁与网络姿态。不是本应用自身完整性。 */
+    RUNTIME("运行环境"),
 }
 
 /**
@@ -66,4 +69,7 @@ enum class EnvironmentVerdict(val labelZh: String) {
 
     /** 多类高危信号同时出现，或模拟器与容器同时成立。 */
     VIRTUALIZED_ENVIRONMENT("虚拟化环境"),
+
+    /** 提权、注入或启动信任线索，不能据此说成模拟器或恶意。 */
+    RUNTIME_CLUE("运行环境线索"),
 }
