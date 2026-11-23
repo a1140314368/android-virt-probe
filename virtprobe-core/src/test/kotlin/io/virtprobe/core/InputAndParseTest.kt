@@ -24,10 +24,10 @@ class InputAndParseTest {
         assertTrue(findings.none { it.detected })
         val story = InputEventAnalyzer.narrateMotion(sample, findings)
         assertFalse(story.suspicious)
-        assertEquals("本次输入未看到明显注入特征。这是启发式判断，不能证明来自物理手指。", story.verdictZh)
-        assertTrue(story.observedDataZh.contains("deviceId=4"))
-        assertTrue(story.observedDataZh.contains("pressure=0.42"))
-        assertTrue(story.expectedBaselineZh.contains("真实手指触控应来自物理触控芯片"))
+        assertEquals(InputEventAnalyzer.HEAD_NONE, story.headlineZh)
+        assertTrue(story.verdictZh.contains("不能证明是真人"))
+        assertTrue(story.observedDataZh.contains("isVirtual=false"))
+        assertTrue(story.observedDataZh.contains("FINGER"))
     }
 
     @Test
@@ -48,16 +48,47 @@ class InputAndParseTest {
         assertTrue(findings.any { it.signalId == "in.event.source" })
         val story = InputEventAnalyzer.narrateMotion(sample, findings)
         assertTrue(story.suspicious)
-        assertEquals("本次输入疑似虚拟注入或自动化", story.verdictZh)
-        assertTrue(story.recommendationZh.contains("建议"))
+        assertEquals(InputEventAnalyzer.HEAD_CLUE, story.headlineZh)
+        assertTrue(story.verdictZh.contains("观测"))
+        assertTrue(story.notesZh.any { it.contains("遮挡不是注入") })
     }
 
     @Test
-    @DisplayName("零时长、恒定压力直线和等间隔点击会触发运动学")
-    fun kinematics() {
+    @DisplayName("只有遮挡时不算注入")
+    fun obscuredIsNotInjection() {
+        val sample = finger(flags = InputEventBits.FLAG_WINDOW_IS_OBSCURED)
+        val story = InputEventAnalyzer.narrateMotion(sample, InputEventAnalyzer.analyzeMotion(listOf(sample)))
+        assertFalse(story.suspicious)
+        assertEquals(InputEventAnalyzer.HEAD_NONE, story.headlineZh)
+        assertTrue(story.notesZh.single().contains("遮挡不是注入"))
+    }
+
+    @Test
+    @DisplayName("无障碍标志、虚拟键盘设备号、鼠标和未知工具类型分别是线索")
+    fun sourceClues() {
+        val flagged = finger(flags = InputEventBits.FLAG_IS_ACCESSIBILITY_EVENT, isDeviceVirtual = false)
+        assertTrue(InputEventAnalyzer.analyzeMotion(listOf(flagged)).any { it.signalId == "in.event.accessibility" })
+
+        val keyboardId = finger(deviceId = InputEventBits.DEVICE_ID_VIRTUAL_KEYBOARD, isDeviceVirtual = true, deviceName = "Virtual")
+        assertTrue(InputEventAnalyzer.analyzeMotion(listOf(keyboardId)).any { it.summaryZh.contains("虚拟键盘设备号") })
+
+        val mouse = finger(source = InputSourceBits.SOURCE_MOUSE, toolType = InputEventBits.TOOL_TYPE_MOUSE)
+        val mouseStory = InputEventAnalyzer.narrateMotion(mouse, InputEventAnalyzer.analyzeMotion(listOf(mouse)))
+        assertEquals(InputEventAnalyzer.HEAD_CLUE, mouseStory.headlineZh)
+        assertTrue(mouseStory.verdictZh.contains("鼠标"))
+
+        val unknown = finger(toolType = InputEventBits.TOOL_TYPE_UNKNOWN)
+        assertTrue(InputEventAnalyzer.analyzeMotion(listOf(unknown)).any { it.summaryZh.contains("未知") })
+    }
+
+    @Test
+    @DisplayName("模拟器设备名和压力恒值只导致证据不足，不编成注入")
+    fun weakOrEmulator() {
         val zero = finger(action = InputEventBits.ACTION_UP, eventTime = 50, downTime = 50)
-        val zeroFindings = InputEventAnalyzer.analyzeMotion(listOf(zero))
-        assertTrue(zeroFindings.single().observedDataZh.contains("时长为 0"))
+        val zeroStory = InputEventAnalyzer.narrateMotion(zero, InputEventAnalyzer.analyzeMotion(listOf(zero)))
+        assertFalse(zeroStory.suspicious)
+        assertEquals(InputEventAnalyzer.HEAD_WEAK, zeroStory.headlineZh)
+        assertTrue(zeroStory.notesZh.any { it.contains("时刻相同") })
 
         val moves = (0 until 8).map { index ->
             finger(
@@ -68,18 +99,25 @@ class InputAndParseTest {
                 size = 0f,
                 touchMajor = 0f,
                 eventTime = 1_000L + index * 16,
+                pressureAvailable = true,
             )
         }
         val line = InputEventAnalyzer.analyzeMotion(moves)
-        val text = line.single { it.signalId == "in.event.kinematics" }.observedDataZh
-        assertTrue(text.contains("完全不变") || text.contains("零抖动直线"))
+        assertTrue(line.none { it.signalId == "in.event.kinematics" })
+        val lineStory = InputEventAnalyzer.narrateMotion(moves, line)
+        assertEquals(InputEventAnalyzer.HEAD_WEAK, lineStory.headlineZh)
+        assertTrue(lineStory.notesZh.any { it.contains("压力值相同") })
 
-        val rhythmSample = finger(action = InputEventBits.ACTION_DOWN, eventTime = 500, downTime = 500)
-        val rhythm = InputEventAnalyzer.analyzeMotion(
-            history = listOf(rhythmSample),
-            recentDownTimes = listOf(100, 200, 300, 400, 500),
-        )
-        assertTrue(rhythm.single().observedDataZh.contains("机械等间隔"))
+        val unsupported = finger(pressure = 1f, pressureAvailable = false)
+        val unsupportedStory = InputEventAnalyzer.narrateMotion(unsupported, InputEventAnalyzer.analyzeMotion(listOf(unsupported)))
+        assertEquals(InputEventAnalyzer.HEAD_NONE, unsupportedStory.headlineZh)
+        assertTrue(unsupportedStory.capabilityZh.contains("压力不可用"))
+
+        val emulator = finger(deviceName = "virtio_input_multi_touch_1")
+        val emulatorStory = InputEventAnalyzer.narrateMotion(emulator, InputEventAnalyzer.analyzeMotion(listOf(emulator)))
+        assertFalse(emulatorStory.suspicious)
+        assertEquals(InputEventAnalyzer.HEAD_WEAK, emulatorStory.headlineZh)
+        assertTrue(emulatorStory.verdictZh.contains("不能当物理手指基线"))
     }
 
     @Test
@@ -100,8 +138,10 @@ class InputAndParseTest {
         assertEquals(Severity.LOW, findings.single().severity)
         val story = InputEventAnalyzer.narrateKey(sample, findings)
         assertFalse(story.suspicious)
+        assertEquals(InputEventAnalyzer.HEAD_NONE, story.headlineZh)
         assertTrue(story.verdictZh.contains("软键盘"))
-        assertTrue(story.observedDataZh.contains("deviceId=-1"))
+        assertTrue(story.verdictZh.contains("不能判作弊"))
+        assertFalse(story.observedDataZh.contains("keyCode"))
     }
 
     @Test
@@ -150,6 +190,9 @@ class InputAndParseTest {
         downTime: Long = 900,
         isDeviceVirtual: Boolean? = false,
         deviceName: String? = "fts_ts",
+        pressureAvailable: Boolean? = null,
+        pointerCount: Int = 1,
+        toolTypes: List<Int> = emptyList(),
     ): MotionSample = MotionSample(
         action = action,
         deviceId = deviceId,
@@ -165,5 +208,8 @@ class InputAndParseTest {
         downTime = downTime,
         isDeviceVirtual = isDeviceVirtual,
         deviceName = deviceName,
+        pressureAvailable = pressureAvailable,
+        pointerCount = pointerCount,
+        toolTypes = toolTypes,
     )
 }

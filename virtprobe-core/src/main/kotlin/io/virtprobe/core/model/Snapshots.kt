@@ -168,14 +168,16 @@ object InputEventBits {
     const val ACTION_DOWN: Int = 0
     const val ACTION_UP: Int = 1
     const val ACTION_MOVE: Int = 2
+    const val ACTION_POINTER_DOWN: Int = 5
+    const val ACTION_POINTER_UP: Int = 6
     const val ACTION_MASK: Int = 0xff
 
     const val FLAG_WINDOW_IS_OBSCURED: Int = 0x1
     const val FLAG_WINDOW_IS_PARTIALLY_OBSCURED: Int = 0x2
 
     /**
-     * 无障碍服务改写或生成的事件标志。平台字段名是 `FLAG_IS_ACCESSIBILITY_EVENT`，值固定为 `0x800`。
-     * 部分资料把它称为 accessibility-generated 标志，语义相同：事件由无障碍服务产生或改写。
+     * 无障碍服务改写或生成的事件标志。AOSP `MotionEvent.FLAG_IS_ACCESSIBILITY_EVENT` 注释写明值为 `0x800`，
+     * 当前主线仍是 `@hide @TestApi`。应用读 `getFlags()` 的这一位，不依赖隐藏常量能否编译。
      */
     const val FLAG_IS_ACCESSIBILITY_EVENT: Int = 0x800
 
@@ -224,6 +226,17 @@ data class MotionSample(
     val downTime: Long,
     val isDeviceVirtual: Boolean? = null,
     val deviceName: String? = null,
+    val pointerCount: Int = 1,
+    val toolTypes: List<Int> = emptyList(),
+    val historySize: Int = 0,
+    val touchMinor: Float = 0f,
+    /** null 表示调用方没提供设备轴信息，不能当成不可用。 */
+    val pressureAvailable: Boolean? = null,
+    val sizeAvailable: Boolean? = null,
+    val touchMajorAvailable: Boolean? = null,
+    val touchMinorAvailable: Boolean? = null,
+    val deviceSources: Int = 0,
+    val deviceMissing: Boolean = false,
 )
 
 /** 一次按键采样。 */
@@ -313,4 +326,15 @@ data class InputNarrative(
     val expectedBaselineZh: String,
     val recommendationZh: String,
     val findings: List<SignalFinding>,
+    /** 发现输入异常线索 / 本次未发现 / 证据不足。 */
+    val headlineZh: String = "",
+    val notesZh: List<String> = emptyList(),
+    val detailZh: String = "",
+    val capabilityZh: String = "",
+    /** 引导归类：点击、长按、滑动、多指。空字符串表示手势还没结束。 */
+    val gestureZh: String = "",
+    val settled: Boolean = false,
+    val sequence: Long = 0,
+    val x: Float = 0f,
+    val y: Float = 0f,
 )

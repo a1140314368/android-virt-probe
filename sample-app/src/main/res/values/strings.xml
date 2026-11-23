@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="probe_gesture_desc">只在你按下测试按钮时向本应用发送手势。不读取文字，不监听密码。</string>
+</resources>
