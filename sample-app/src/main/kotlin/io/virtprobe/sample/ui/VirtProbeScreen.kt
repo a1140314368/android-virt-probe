@@ -2,7 +2,10 @@
 package io.virtprobe.sample.ui
 
 import android.content.Intent
+import android.provider.Settings
 import androidx.activity.ComponentActivity
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -51,6 +54,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -65,6 +70,7 @@ import io.virtprobe.core.json.ReportJson
 import io.virtprobe.core.model.InputNarrative
 import io.virtprobe.core.model.ProbeReport
 import io.virtprobe.core.model.SignalFinding
+import io.virtprobe.sample.input.ProbeGestureService
 import io.virtprobe.sdk.VirtProbe
 import io.virtprobe.sdk.input.VirtProbeWindowCallback
 import kotlinx.coroutines.Dispatchers
@@ -597,42 +603,146 @@ private fun Field(label: String, body: String) {
 
 @Composable
 private fun InputPage(trace: InputNarrative?) {
+    val context = LocalContext.current
+    val activity = context as ComponentActivity
+    val view = LocalView.current
     var draft by remember { mutableStateOf("") }
     var tech by remember { mutableStateOf(false) }
+    var slots by remember { mutableStateOf(mapOf<String, String>()) }
+    var pads by remember { mutableStateOf(mapOf<String, Pad>()) }
+    var tapAt by remember { mutableStateOf<Pair<Float, Float>?>(null) }
+    var tick by remember { mutableIntStateOf(0) }
+    DisposableEffect(activity) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) tick += 1
+        }
+        activity.lifecycle.addObserver(observer)
+        onDispose { activity.lifecycle.removeObserver(observer) }
+    }
+    val serviceOn = remember(tick) { ProbeGestureService.isEnabled(context) }
+    LaunchedEffect(trace?.sequence) {
+        val current = trace ?: return@LaunchedEffect
+        if (!current.settled || current.gestureZh.isBlank()) return@LaunchedEffect
+        val pad = pads.entries.firstOrNull { it.value.contains(current.x, current.y) }?.key
+        if (pad != null) slots = slots + (pad to current.headlineZh)
+        val dir = activity.getExternalFilesDir(null) ?: return@LaunchedEffect
+        val line = buildString {
+            append("{\"seq\":").append(current.sequence)
+            append(",\"gesture\":\"").append(current.gestureZh).append('"')
+            append(",\"headline\":\"").append(current.headlineZh).append('"')
+            append(",\"verdict\":\"").append(jsonEscape(current.verdictZh)).append('"')
+            append(",\"observed\":\"").append(jsonEscape(current.observedDataZh)).append('"')
+            append(",\"capability\":\"").append(jsonEscape(current.capabilityZh)).append('"')
+            append(",\"detail\":\"").append(jsonEscape(current.detailZh)).append('"')
+            append(",\"notes\":\"").append(jsonEscape(current.notesZh.joinToString("；"))).append("\"}\n")
+        }
+        java.io.File(dir, "input-events.jsonl").appendText(line)
+    }
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Text("只看这次点击和按键。不能证明来自物理手指。", color = Muted, fontSize = 13.sp)
-        Box(
-            modifier = Modifier.fillMaxWidth().height(72.dp).clip(RoundedCornerShape(12.dp)).background(Card).border(1.dp, Line, RoundedCornerShape(12.dp)),
-            contentAlignment = Alignment.Center,
-        ) { Text("在这一带点击或滑动", color = Muted) }
+        Text("这是观测，不是真人认证。", color = Muted, fontSize = 13.sp)
+        val headline = trace?.headlineZh?.ifBlank { null } ?: "还没有输入"
+        val headlineColor = when (trace?.headlineZh) {
+            "发现输入异常线索" -> Clue
+            "证据不足" -> Restricted
+            else -> Muted
+        }
+        Text(headline, color = headlineColor, fontWeight = FontWeight.Medium, fontSize = 18.sp)
+        if (trace != null) {
+            Text(oneSentence(trace.verdictZh, 80), color = Ink, fontSize = 16.sp, lineHeight = 22.sp)
+            Text(oneSentence(trace.observedDataZh, 80), color = Muted, fontSize = 13.sp)
+            if (trace.capabilityZh.isNotBlank()) Text(trace.capabilityZh, color = Muted, fontSize = 13.sp)
+            trace.notesZh.firstOrNull { "遮挡" in it }?.let { Text(it, color = Ink, fontSize = 13.sp) }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            GuidePad("点一下", slots["点击"], Modifier.weight(1f).onGloballyPositioned { coords ->
+                pads = pads + ("点击" to coords.toPad(view))
+                val pad = pads.getValue("点击")
+                tapAt = (pad.left + pad.right) / 2f to (pad.top + pad.bottom) / 2f
+            })
+            GuidePad("按住", slots["长按"], Modifier.weight(1f).onGloballyPositioned { coords ->
+                pads = pads + ("长按" to coords.toPad(view))
+            })
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            GuidePad("滑动", slots["滑动"], Modifier.weight(1f).onGloballyPositioned { coords ->
+                pads = pads + ("滑动" to coords.toPad(view))
+            })
+            GuidePad("双指", slots["多指"], Modifier.weight(1f).onGloballyPositioned { coords ->
+                pads = pads + ("多指" to coords.toPad(view))
+            })
+        }
         OutlinedTextField(
             value = draft,
             onValueChange = { draft = it },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
-            placeholder = { Text("在这里打字") },
+            placeholder = { Text("测试输入，不要填密码") },
         )
-        if (trace == null) {
-            Text("还没有输入事件", color = Muted)
-        } else {
-            val status = if (trace.suspicious) "发现线索" else "未发现线索"
-            Text(status, color = if (trace.suspicious) Clue else Muted, fontWeight = FontWeight.Medium)
-            Field("结论", oneSentence(trace.verdictZh))
-            Field("实际值", oneSentence(trace.observedDataZh))
-            Field("参考值", oneSentence(trace.expectedBaselineZh))
-            Field("建议", oneSentence(trace.recommendationZh))
-            TextButton(onClick = { tech = !tech }) { Text(if (tech) "收起技术详情" else "技术详情", color = Ink) }
-            if (tech) {
-                Text(trace.observedDataZh, color = Ink, fontSize = 13.sp)
-                trace.findings.forEach { finding ->
-                    Text("${finding.signalId} ${finding.summaryZh}", color = Muted, fontSize = 12.sp)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            TextButton(onClick = {
+                if (!ProbeGestureService.isEnabled(context)) {
+                    context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                } else {
+                    val at = tapAt ?: return@TextButton
+                    ProbeGestureService.tap(at.first, at.second)
                 }
-            }
+            }) { Text(if (serviceOn) "无障碍测试点击" else "开启测试服务") }
+            TextButton(onClick = {
+                if (!ProbeGestureService.isEnabled(context)) {
+                    context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                } else {
+                    val at = tapAt ?: return@TextButton
+                    ProbeGestureService.twoFinger(at.first, at.second)
+                }
+            }, enabled = serviceOn) { Text("无障碍双指") }
+        }
+        TextButton(onClick = { tech = !tech }) { Text(if (tech) "收起技术详情" else "技术详情", color = Ink) }
+        if (tech && trace != null) {
+            Text(trace.detailZh, color = Ink, fontSize = 13.sp, lineHeight = 18.sp)
+            trace.notesZh.forEach { Text(it, color = Muted, fontSize = 12.sp) }
+            trace.findings.forEach { Text("${it.signalId} ${it.summaryZh}", color = Muted, fontSize = 12.sp) }
+            Text(trace.expectedBaselineZh, color = Muted, fontSize = 12.sp, lineHeight = 18.sp)
         }
     }
+}
+
+@Composable
+private fun GuidePad(title: String, result: String?, modifier: Modifier) {
+    Column(
+        modifier
+            .height(84.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(Card)
+            .border(1.dp, Line, RoundedCornerShape(12.dp))
+            .padding(10.dp),
+        verticalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Text(title, color = Ink, fontWeight = FontWeight.Medium)
+        Text(result ?: "未做", color = Muted, fontSize = 12.sp)
+    }
+}
+
+private data class Pad(val left: Float, val top: Float, val right: Float, val bottom: Float) {
+    fun contains(x: Float, y: Float): Boolean = x in left..right && y in top..bottom
+}
+
+private fun androidx.compose.ui.layout.LayoutCoordinates.toPad(view: android.view.View): Pad {
+    val origin = IntArray(2)
+    view.getLocationOnScreen(origin)
+    val pos = positionInWindow()
+    return Pad(
+        left = origin[0] + pos.x,
+        top = origin[1] + pos.y,
+        right = origin[0] + pos.x + size.width,
+        bottom = origin[1] + pos.y + size.height,
+    )
+}
+
+private fun jsonEscape(value: String): String {
+    return value.replace("\\", "\\\\").replace("\"", "'").replace("\n", " ")
 }
 
 @Composable

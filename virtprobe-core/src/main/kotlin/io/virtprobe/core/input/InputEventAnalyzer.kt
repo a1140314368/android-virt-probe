@@ -2,7 +2,6 @@
 package io.virtprobe.core.input
 
 import io.virtprobe.core.catalog.Attribution
-import io.virtprobe.core.catalog.KnownSignals
 import io.virtprobe.core.model.InputEventBits
 import io.virtprobe.core.model.InputNarrative
 import io.virtprobe.core.model.InputSourceBits
@@ -12,108 +11,310 @@ import io.virtprobe.core.model.Severity
 import io.virtprobe.core.model.SignalCategory
 import io.virtprobe.core.model.SignalFinding
 import io.virtprobe.core.model.finding
-import kotlin.math.abs
 import kotlin.math.sqrt
 
 /**
- * 实时触控和按键溯源。调用方传入当前事件，以及同一手势的历史点和近期按下时间。
- * 滑动窗口里的运动学只在样本够了以后才命中，避免把正常的短点击误报成直线。
+ * 实时触控和按键的来源观察。
+ *
+ * 只把平台自己标明的生成标志、设备身份和来源/工具类型不一致当作线索。
+ * 压力、面积、时长和轨迹只写进备注，不设统一阈值，也不折成真实性分数。
+ * isVirtual=false 不能证明真人；系统软键盘的虚拟设备也不能判作弊。
+ * 遮挡标志单独说明，不算注入。
  */
 object InputEventAnalyzer {
-    private val category = SignalCategory.INPUT
-    private const val FINGER_BASELINE =
-        "真实手指触控应来自物理触控芯片 isVirtual=false 且具备动态压力与触控面积变化。"
+    const val HEAD_CLUE: String = "发现输入异常线索"
+    const val HEAD_NONE: String = "本次未发现"
+    const val HEAD_WEAK: String = "证据不足"
 
-    fun analyzeMotion(history: List<MotionSample>, recentDownTimes: List<Long> = emptyList()): List<SignalFinding> {
+    private val category = SignalCategory.INPUT
+    private const val BASELINE =
+        "直接手指触控通常来自非虚拟触屏，工具类型是手指，且不带无障碍生成标志。isVirtual=false 不能证明真人。系统软键盘是虚拟设备，不能据此判作弊。"
+    private const val ADVICE_CLUE = "核对技术详情里的标志和设备。这是观测，不是真人认证。"
+    private const val ADVICE_NONE = "这次没有注入线索。这不能认证真人。"
+    private const val ADVICE_WEAK = "不要把证据不足写成未发现，也不要写成已经确认注入。"
+
+    /** 远程注入常见设备名。模拟器芯片名不在这里，避免把整台模拟器的普通触控都写成注入。 */
+    private val injectorNames = listOf("uinput", "scrcpy", "vtouch", "inputinjector", "remote-desktop")
+
+    /** 模拟器或虚拟机输入设备名。只能说明这里没有物理手指基线。 */
+    private val emulatorNames = listOf(
+        "goldfish", "ranchu", "virtio", "qwerty", "vbox", "genymotion", "bluestacks", "memu", "nox", "ldplayer",
+    )
+
+    /** 引导归类用的时长和位移，沿用长按大约半秒的习惯，不是真实性阈值。 */
+    private const val GUIDE_LONG_MS = 500L
+    private const val GUIDE_SWIPE_PX = 48.0
+
+    fun analyzeMotion(history: List<MotionSample>): List<SignalFinding> {
         val current = history.lastOrNull() ?: return emptyList()
-        val gesture = history.filter { it.downTime == current.downTime }
         return listOfNotNull(
-            motionDevice(current),
+            accessibility(current),
+            injectorName(current),
+            virtualTouchDevice(current),
+            virtualKeyboardOnTouch(current),
+            sourceAndTool(current),
+            pointerTools(current),
             obscured(current),
-            accessibility(current, "in.event.accessibility"),
-            motionSource(current),
-            kinematics(current, gesture, recentDownTimes),
         )
     }
 
     fun analyzeKey(sample: KeySample): List<SignalFinding> {
         return listOfNotNull(
-            keyDevice(sample),
             keyAccessibility(sample),
+            keyInjector(sample),
+            keySoftKeyboard(sample),
         )
     }
 
     fun narrateMotion(sample: MotionSample, findings: List<SignalFinding>): InputNarrative {
-        return narrate(
+        return narrateMotion(listOf(sample), findings)
+    }
+
+    fun narrateMotion(history: List<MotionSample>, findings: List<SignalFinding>): InputNarrative {
+        val current = history.lastOrNull()
+            ?: return emptyNarrative()
+        val gesture = history.filter { it.downTime == current.downTime }.ifEmpty { listOf(current) }
+        val notes = mutableListOf<String>()
+        obscuredNote(current)?.let { notes += it }
+        emulatorNote(current.deviceName)?.let { notes += it }
+        weakMotionNotes(current, gesture).forEach { notes += it }
+        val clue = injection(findings)
+        val missing = current.deviceMissing
+        val headline = headline(clue, missing, notes)
+        val sentence = motionSentence(headline, clue, notes, current)
+        return InputNarrative(
+            suspicious = clue != null,
+            headlineZh = headline,
+            verdictZh = sentence,
+            observedDataZh = shortMotion(current),
+            expectedBaselineZh = BASELINE,
+            recommendationZh = advice(headline),
             findings = findings,
-            measured = motionMeasured(sample),
-            cleanVerdict = "本次输入未看到明显注入特征。这是启发式判断，不能证明来自物理手指。",
-            mildVerdict = "本次输入带有低敏特征，还不能单独定性为注入",
-            suspiciousVerdict = "本次输入疑似虚拟注入或自动化",
+            notesZh = notes,
+            detailZh = detailMotion(current, gesture),
+            capabilityZh = capability(current),
+            gestureZh = guideGesture(current, gesture),
+            settled = isSettled(current.action),
+            x = current.x,
+            y = current.y,
         )
     }
 
     fun narrateKey(sample: KeySample, findings: List<SignalFinding>): InputNarrative {
-        val softKeyboard = sample.deviceId <= 0 && findings.none { it.detected && it.severity.atLeast(Severity.MEDIUM) }
-        return narrate(
-            findings = findings,
-            measured = keyMeasured(sample),
-            cleanVerdict = "本次按键未看到明显注入特征。这是启发式判断，不能证明来自物理键盘。",
-            mildVerdict = if (softKeyboard) "本次按键来自系统软键盘（虚拟设备），未见注入特征" else "本次按键带有低敏特征",
-            suspiciousVerdict = "本次按键疑似虚拟注入或自动化",
-        )
-    }
-
-    private fun narrate(
-        findings: List<SignalFinding>,
-        measured: String,
-        cleanVerdict: String,
-        mildVerdict: String,
-        suspiciousVerdict: String,
-    ): InputNarrative {
-        val serious = findings.filter { it.detected && it.severity.atLeast(Severity.MEDIUM) }
-        val mild = findings.filter { it.detected && it.severity == Severity.LOW }
-        val primary = (serious.ifEmpty { mild }).maxByOrNull { it.severity.ordinal }
-        val suspicious = serious.isNotEmpty()
-        val verdict = when {
-            suspicious -> suspiciousVerdict
-            mild.isNotEmpty() -> mildVerdict
-            else -> cleanVerdict
+        val notes = mutableListOf<String>()
+        val soft = isSoftKeyboard(sample)
+        if (soft) notes += "系统软键盘是虚拟设备。这不能判作弊。"
+        emulatorNote(sample.deviceName)?.let { notes += it }
+        val clue = injection(findings)
+        val missing = sample.deviceName == null && sample.isDeviceVirtual == null && sample.deviceId != InputEventBits.DEVICE_ID_VIRTUAL_KEYBOARD
+        val headline = when {
+            clue != null -> HEAD_CLUE
+            soft && notes.none { "模拟器" in it } -> HEAD_NONE
+            missing || notes.any { "模拟器" in it } -> HEAD_WEAK
+            else -> HEAD_NONE
+        }
+        val sentence = when {
+            clue != null -> "${clue.summaryZh}这是观测，不是真人认证。"
+            soft -> "系统软键盘是虚拟设备，不能判作弊，也不能证明来自真人。"
+            headline == HEAD_WEAK -> "这次按键读不到足够的设备信息。"
+            else -> "这次按键没有注入线索。这不能证明来自物理键盘。"
         }
         return InputNarrative(
-            suspicious = suspicious,
-            verdictZh = verdict,
-            observedDataZh = primary?.observedDataZh ?: measured,
-            expectedBaselineZh = primary?.expectedBaselineZh ?: FINGER_BASELINE,
-            recommendationZh = primary?.recommendationZh
-                ?: "本次输入未发现虚拟注入特征，可按正常触控继续。若业务极敏感，仍可保留原始事件做抽查。",
+            suspicious = clue != null,
+            headlineZh = headline,
+            verdictZh = sentence,
+            observedDataZh = "按键设备=${sample.deviceId}，来源=${sourceName(sample.source)}，isVirtual=${sample.isDeviceVirtual}。不记录按键码。",
+            expectedBaselineZh = "物理键盘的设备号为正数且 isVirtual=false。软键盘使用虚拟设备号是正常的。",
+            recommendationZh = advice(headline),
             findings = findings,
+            notesZh = notes,
+            detailZh = "deviceId=${sample.deviceId}，deviceName=${sample.deviceName ?: "（未知）"}，isVirtual=${sample.isDeviceVirtual}，" +
+                "source=${sourceName(sample.source)}，flags=0x${sample.flags.toString(16)}。不记录按键码。",
+            capabilityZh = "",
+            gestureZh = "",
+            settled = sample.action == InputEventBits.ACTION_DOWN,
         )
     }
 
-    private fun motionDevice(sample: MotionSample): SignalFinding? {
-        val name = sample.deviceName.orEmpty()
-        val named = KnownSignals.INPUT_NAME_MARKERS.any { it in name.lowercase() }
-        val virtual = sample.isDeviceVirtual == true || sample.deviceId <= 0 || named
-        if (!virtual) return null
-        val soft = sample.deviceId == InputEventBits.DEVICE_ID_VIRTUAL_KEYBOARD && !named &&
-            sample.source == InputSourceBits.SOURCE_KEYBOARD
+    private fun emptyNarrative(): InputNarrative = InputNarrative(
+        suspicious = false,
+        headlineZh = HEAD_WEAK,
+        verdictZh = "还没有输入事件。",
+        observedDataZh = "没有事件。",
+        expectedBaselineZh = BASELINE,
+        recommendationZh = ADVICE_WEAK,
+        findings = emptyList(),
+    )
+
+    private fun injection(findings: List<SignalFinding>): SignalFinding? {
+        return findings.filter {
+            it.detected && it.severity.atLeast(Severity.MEDIUM) && it.signalId != "in.event.obscured"
+        }.maxByOrNull { it.severity.ordinal }
+    }
+
+    private fun headline(clue: SignalFinding?, missing: Boolean, notes: List<String>): String {
+        if (clue != null) return HEAD_CLUE
+        val weak = missing || notes.any { "模拟器" in it || "时刻相同" in it || "压力值相同" in it || "面积值相同" in it || "长轴值相同" in it }
+        return if (weak) HEAD_WEAK else HEAD_NONE
+    }
+
+    private fun motionSentence(
+        headline: String,
+        clue: SignalFinding?,
+        notes: List<String>,
+        sample: MotionSample,
+    ): String = when (headline) {
+        HEAD_CLUE -> "${clue?.summaryZh ?: "这次事件有来源线索。"}这是观测，不是真人认证。"
+        HEAD_WEAK -> when {
+            notes.any { "模拟器" in it } -> "设备名像模拟器输入，不能当物理手指基线。"
+            notes.any { "时刻相同" in it || "相同" in it } -> "只有时长或压力这类弱观察，没有统一阈值。"
+            sample.deviceMissing -> "读不到这次事件对应的输入设备。"
+            else -> "现有字段不够区分这次输入。"
+        }
+        else -> "这次没有注入线索。isVirtual=${sample.isDeviceVirtual} 不能证明是真人。"
+    }
+
+    private fun advice(headline: String): String = when (headline) {
+        HEAD_CLUE -> ADVICE_CLUE
+        HEAD_WEAK -> ADVICE_WEAK
+        else -> ADVICE_NONE
+    }
+
+    private fun accessibility(sample: MotionSample): SignalFinding? {
+        if (sample.flags and InputEventBits.FLAG_IS_ACCESSIBILITY_EVENT == 0) return null
+        return finding(
+            signalId = "in.event.accessibility",
+            category = category,
+            severity = Severity.HIGH,
+            confidence = 0.9,
+            detected = true,
+            titleZh = "无障碍生成的输入",
+            summaryZh = "这次事件带无障碍生成标志。",
+            observedDataZh = "${shortMotion(sample)} 含 0x800。",
+            expectedBaselineZh = "直接手指或物理键盘不会带这个标志。它只说明这次事件由无障碍服务生成或改写，不说明操作者不是人。",
+            recommendationZh = ADVICE_CLUE,
+            rawEvidence = evidence(sample),
+            sourceAttribution = Attribution.INPUT,
+        )
+    }
+
+    private fun keyAccessibility(sample: KeySample): SignalFinding? {
+        if (sample.flags and InputEventBits.FLAG_IS_ACCESSIBILITY_EVENT == 0) return null
+        return finding(
+            signalId = "in.event.accessibility",
+            category = category,
+            severity = Severity.HIGH,
+            confidence = 0.9,
+            detected = true,
+            titleZh = "无障碍生成的按键",
+            summaryZh = "这次按键带无障碍生成标志。",
+            observedDataZh = "flags=0x${sample.flags.toString(16)}。不记录按键码。",
+            expectedBaselineZh = "直接按键不会带这个标志。",
+            recommendationZh = ADVICE_CLUE,
+            rawEvidence = mapOf("flags" to sample.flags.toString()),
+            sourceAttribution = Attribution.INPUT,
+        )
+    }
+
+    private fun injectorName(sample: MotionSample): SignalFinding? {
+        val name = matched(sample.deviceName, injectorNames) ?: return null
+        return deviceFinding("设备名含注入器标记 $name。", sample)
+    }
+
+    private fun keyInjector(sample: KeySample): SignalFinding? {
+        val name = matched(sample.deviceName, injectorNames) ?: return null
         return finding(
             signalId = "in.event.device",
             category = category,
-            severity = if (soft) Severity.LOW else Severity.HIGH,
-            confidence = if (named || sample.deviceId <= 0) 0.92 else 0.86,
+            severity = Severity.HIGH,
+            confidence = 0.9,
             detected = true,
-            titleZh = "触控事件的设备来源",
-            summaryZh = if (soft) "事件来自虚拟键盘设备号。" else "触控事件来自虚拟设备、非正设备号，或设备名像注入器。",
-            observedDataZh = motionMeasured(sample),
-            expectedBaselineZh = FINGER_BASELINE,
-            recommendationZh = if (soft) {
-                "系统软键盘使用虚拟设备号是正常现象。若这是一次触摸而不是按键，应拒绝并要求真实触控。"
-            } else {
-                "本次输入疑似脚本或远程注入，建议拒绝本次操作并要求真实触控复核。"
-            },
-            rawEvidence = motionEvidence(sample),
+            titleZh = "按键设备名",
+            summaryZh = "按键设备名含注入器标记 $name。",
+            observedDataZh = "deviceId=${sample.deviceId}，deviceName=${sample.deviceName}。不记录按键码。",
+            expectedBaselineZh = BASELINE,
+            recommendationZh = ADVICE_CLUE,
+            rawEvidence = mapOf("deviceName" to sample.deviceName.orEmpty()),
+            sourceAttribution = Attribution.INPUT,
+        )
+    }
+
+    private fun virtualTouchDevice(sample: MotionSample): SignalFinding? {
+        if (sample.isDeviceVirtual != true) return null
+        if (!hasSource(sample.source, InputSourceBits.SOURCE_TOUCHSCREEN)) return null
+        if (sample.deviceId == InputEventBits.DEVICE_ID_VIRTUAL_KEYBOARD) return null
+        return deviceFinding("触屏设备被系统标成虚拟设备。", sample)
+    }
+
+    private fun virtualKeyboardOnTouch(sample: MotionSample): SignalFinding? {
+        if (sample.deviceId != InputEventBits.DEVICE_ID_VIRTUAL_KEYBOARD) return null
+        if (!hasSource(sample.source, InputSourceBits.SOURCE_TOUCHSCREEN)) return null
+        return deviceFinding("触屏事件使用了虚拟键盘设备号。", sample)
+    }
+
+    private fun keySoftKeyboard(sample: KeySample): SignalFinding? {
+        if (!isSoftKeyboard(sample)) return null
+        if (matched(sample.deviceName, injectorNames) != null) return null
+        return finding(
+            signalId = "in.event.device",
+            category = category,
+            severity = Severity.LOW,
+            confidence = 0.4,
+            detected = true,
+            titleZh = "系统软键盘",
+            summaryZh = "按键来自系统软键盘使用的虚拟设备。",
+            observedDataZh = "deviceId=${sample.deviceId}，isVirtual=${sample.isDeviceVirtual}。不记录按键码。",
+            expectedBaselineZh = "软键盘使用虚拟设备号是正常的，不能据此判作弊。",
+            recommendationZh = "不要只凭软键盘的虚拟设备号阻断输入。",
+            rawEvidence = mapOf("deviceId" to sample.deviceId.toString(), "isVirtual" to sample.isDeviceVirtual.toString()),
+            sourceAttribution = Attribution.INPUT,
+        )
+    }
+
+    private fun sourceAndTool(sample: MotionSample): SignalFinding? {
+        val touch = hasSource(sample.source, InputSourceBits.SOURCE_TOUCHSCREEN)
+        val mouse = hasSource(sample.source, InputSourceBits.SOURCE_MOUSE) ||
+            sample.toolType == InputEventBits.TOOL_TYPE_MOUSE
+        val empty = sample.source == 0 || sample.source == InputSourceBits.SOURCE_ANY
+        val unknownTool = touch && sample.toolType == InputEventBits.TOOL_TYPE_UNKNOWN
+        val summary = when {
+            empty -> "事件来源是空的。"
+            mouse && touch -> "同一次事件里既像触屏又像鼠标。"
+            mouse -> "这次是鼠标来源，不是触屏手指。"
+            unknownTool -> "触屏事件的工具类型是未知。"
+            else -> return null
+        }
+        return finding(
+            signalId = "in.event.source",
+            category = category,
+            severity = Severity.MEDIUM,
+            confidence = 0.8,
+            detected = true,
+            titleZh = "来源与工具类型",
+            summaryZh = summary,
+            observedDataZh = shortMotion(sample),
+            expectedBaselineZh = "手指触摸的来源是触屏，工具类型是手指。鼠标是另一种来源，不是注入证明，也不是真人证明。来源为空或工具类型未知，说明这次事件没有按手指分类。",
+            recommendationZh = ADVICE_CLUE,
+            rawEvidence = evidence(sample),
+            sourceAttribution = Attribution.INPUT,
+        )
+    }
+
+    private fun pointerTools(sample: MotionSample): SignalFinding? {
+        val tools = sample.toolTypes.ifEmpty { listOf(sample.toolType) }
+        if (sample.pointerCount < 2 || tools.distinct().size < 2) return null
+        return finding(
+            signalId = "in.event.pointers",
+            category = category,
+            severity = Severity.MEDIUM,
+            confidence = 0.75,
+            detected = true,
+            titleZh = "多指工具类型",
+            summaryZh = "同一次事件里各指的工具类型不一致。",
+            observedDataZh = "pointerCount=${sample.pointerCount}，toolTypes=${tools.joinToString(",") { toolName(it) }}。",
+            expectedBaselineZh = "同一次多指触控的各指工具类型通常一致。不一致只是来源线索，不是真人认证。",
+            recommendationZh = ADVICE_CLUE,
+            rawEvidence = evidence(sample),
             sourceAttribution = Attribution.INPUT,
         )
     }
@@ -122,227 +323,158 @@ object InputEventAnalyzer {
         val full = sample.flags and InputEventBits.FLAG_WINDOW_IS_OBSCURED != 0
         val partial = sample.flags and InputEventBits.FLAG_WINDOW_IS_PARTIALLY_OBSCURED != 0
         if (!full && !partial) return null
+        val which = if (full) "事件穿过了被遮挡的区域" else "窗口另有区域被遮挡"
         return finding(
             signalId = "in.event.obscured",
             category = category,
-            severity = if (full) Severity.HIGH else Severity.MEDIUM,
-            confidence = 0.9,
+            severity = if (full) Severity.MEDIUM else Severity.LOW,
+            confidence = 0.85,
             detected = true,
-            titleZh = "窗口被遮挡的触控",
-            summaryZh = if (full) "触摸穿过了上层窗口，存在点击劫持风险。" else "窗口部分区域被遮挡。",
-            observedDataZh = "${motionMeasured(sample)} 遮挡标志：完全遮挡=$full，部分遮挡=$partial。",
-            expectedBaselineZh = "用户直接点在本窗口上时，不应带 FLAG_WINDOW_IS_OBSCURED。部分遮挡表示触摸点以外的区域有悬浮窗，也需要提示用户。",
-            recommendationZh = "存在遮挡点击风险，建议丢弃这次触摸，提示关闭悬浮窗，并对敏感按钮做二次确认。",
-            rawEvidence = motionEvidence(sample),
+            titleZh = "窗口遮挡",
+            summaryZh = "$which。遮挡不是注入。",
+            observedDataZh = shortMotion(sample),
+            expectedBaselineZh = "FLAG_WINDOW_IS_OBSCURED 表示触摸穿过上层窗口。FLAG_WINDOW_IS_PARTIALLY_OBSCURED 表示触摸点以外还有遮挡。两者都不是无障碍生成标志。",
+            recommendationZh = "遮挡要单独看。不要把它写成注入，也不要忽略点击劫持的可能。",
+            rawEvidence = evidence(sample),
             sourceAttribution = Attribution.INPUT,
         )
     }
 
-    private fun accessibility(sample: MotionSample, signalId: String): SignalFinding? {
-        if (sample.flags and InputEventBits.FLAG_IS_ACCESSIBILITY_EVENT == 0) return null
-        return accessibilityFinding(signalId, motionMeasured(sample), motionEvidence(sample))
+    private fun obscuredNote(sample: MotionSample): String? {
+        val full = sample.flags and InputEventBits.FLAG_WINDOW_IS_OBSCURED != 0
+        val partial = sample.flags and InputEventBits.FLAG_WINDOW_IS_PARTIALLY_OBSCURED != 0
+        if (!full && !partial) return null
+        return if (full) "窗口被遮挡，事件穿过遮挡区域。遮挡不是注入。" else "窗口另有区域被遮挡。遮挡不是注入。"
     }
 
-    private fun keyAccessibility(sample: KeySample): SignalFinding? {
-        if (sample.flags and InputEventBits.FLAG_IS_ACCESSIBILITY_EVENT == 0) return null
-        return accessibilityFinding("in.event.accessibility", keyMeasured(sample), keyEvidence(sample))
+    private fun emulatorNote(name: String?): String? {
+        val hit = matched(name, emulatorNames) ?: return null
+        return "设备名含 $hit，像模拟器或虚拟机输入。不能当物理手指基线。"
     }
 
-    private fun accessibilityFinding(signalId: String, observed: String, evidence: Map<String, String>): SignalFinding {
-        return finding(
-            signalId = signalId,
-            category = category,
-            severity = Severity.HIGH,
-            confidence = 0.93,
-            detected = true,
-            titleZh = "无障碍服务生成的输入",
-            summaryZh = "事件带有无障碍生成标志。",
-            observedDataZh = "$observed 标志位包含 FLAG_IS_ACCESSIBILITY_EVENT（0x800），表示事件由无障碍服务产生或改写。",
-            expectedBaselineZh = "真实手指或物理键盘不会设置这个标志。它和「系统里安装了无障碍服务」不是一回事，而是这一次事件本身来自无障碍注入。",
-            recommendationZh = "本次输入由无障碍服务生成，建议拒绝敏感操作，除非产品明确允许辅助功能代操作。",
-            rawEvidence = evidence,
-            sourceAttribution = Attribution.INPUT,
-        )
-    }
-
-    private fun motionSource(sample: MotionSample): SignalFinding? {
-        val unknownTool = sample.toolType == InputEventBits.TOOL_TYPE_UNKNOWN
-        val emptySource = sample.source == 0 || sample.source == InputSourceBits.SOURCE_ANY
-        val mouseOnTouch = sample.toolType == InputEventBits.TOOL_TYPE_MOUSE &&
-            sample.source and InputSourceBits.SOURCE_TOUCHSCREEN == InputSourceBits.SOURCE_TOUCHSCREEN
-        if (!unknownTool && !emptySource && !mouseOnTouch) return null
-        return finding(
-            signalId = "in.event.source",
-            category = category,
-            severity = if (emptySource) Severity.HIGH else Severity.MEDIUM,
-            confidence = 0.84,
-            detected = true,
-            titleZh = "触控来源与工具类型异常",
-            summaryZh = "事件的 source 或 toolType 不像手指按在触摸屏上。",
-            observedDataZh = "${motionMeasured(sample)} source=${sourceName(sample.source)}，toolType=${toolName(sample.toolType)}。",
-            expectedBaselineZh = "手指触摸的 source 应为 SOURCE_TOUCHSCREEN，toolType 应为 TOOL_TYPE_FINGER。source 为 0 或 SOURCE_ANY、toolType 为 UNKNOWN，常见于 adb 注入的点击。",
-            recommendationZh = "事件来源不像物理手指，建议拒绝本次点击并要求重新用手指操作。",
-            rawEvidence = motionEvidence(sample),
-            sourceAttribution = Attribution.INPUT,
-        )
-    }
-
-    private fun kinematics(
-        current: MotionSample,
-        gesture: List<MotionSample>,
-        recentDownTimes: List<Long>,
-    ): SignalFinding? {
-        val reasons = mutableListOf<String>()
+    private fun weakMotionNotes(current: MotionSample, gesture: List<MotionSample>): List<String> {
+        val notes = mutableListOf<String>()
         val up = (current.action and InputEventBits.ACTION_MASK) == InputEventBits.ACTION_UP
         if (up && current.eventTime == current.downTime) {
-            reasons += "抬起时间等于按下时间，点击时长为 0"
+            notes += "按下和抬起时刻相同。这只是弱观察。"
         }
         val moves = gesture.filter { (it.action and InputEventBits.ACTION_MASK) == InputEventBits.ACTION_MOVE }
         if (moves.size >= 4) {
-            val pressures = moves.map { it.pressure }.distinct()
-            val majors = moves.map { it.touchMajor }.distinct()
-            val sizes = moves.map { it.size }.distinct()
-            if (pressures.size == 1 && majors.size == 1 && sizes.size == 1) {
-                val pressure = pressures.first()
-                val major = majors.first()
-                if (pressure == 0f || major == 0f || pressure == 1f) {
-                    reasons += "连续 ${moves.size} 个移动点的 pressure=$pressure、touchMajor=$major、size=${sizes.first()} 完全不变"
-                }
+            if (current.pressureAvailable == true && moves.map { it.pressure }.distinct().size == 1) {
+                notes += "连续移动点的压力值相同。压力轴可用，但相同不是阈值。"
+            }
+            if (current.sizeAvailable == true && moves.map { it.size }.distinct().size == 1) {
+                notes += "连续移动点的面积值相同。这不是阈值。"
+            }
+            if (current.touchMajorAvailable == true && moves.map { it.touchMajor }.distinct().size == 1) {
+                notes += "连续移动点的长轴值相同。这不是阈值。"
             }
         }
-        if (moves.size >= 6 && isMechanicalLine(moves)) {
-            reasons += "连续 ${moves.size} 个移动点为零抖动直线，步长几乎完全相等"
-        }
-        val rhythm = mechanicalRhythm(recentDownTimes)
-        if (rhythm != null) reasons += rhythm
-        if (reasons.isEmpty()) return null
-        val zeroClick = reasons.any { "时长为 0" in it }
-        return finding(
-            signalId = "in.event.kinematics",
-            category = category,
-            severity = if (zeroClick) Severity.HIGH else Severity.MEDIUM,
-            confidence = 0.8,
-            detected = true,
-            titleZh = "触控运动学异常",
-            summaryZh = "滑动窗口里的压力、轨迹或点击节律不像手指。",
-            observedDataZh = "${motionMeasured(current)} 异常：${reasons.joinToString("；")}。",
-            expectedBaselineZh = FINGER_BASELINE + "真实滑动会有轻微抖动，点击的 eventTime 应晚于 downTime，连续点击间隔也不会精确到几乎为零方差。",
-            recommendationZh = "触控轨迹呈机械特征，建议拒绝本次操作并要求真实触控复核。",
-            rawEvidence = motionEvidence(current) + mapOf("reasons" to reasons.joinToString(" | ")),
-            sourceAttribution = Attribution.INPUT,
-        )
+        return notes
     }
 
-    private fun keyDevice(sample: KeySample): SignalFinding? {
-        val name = sample.deviceName.orEmpty()
-        val named = KnownSignals.INPUT_NAME_MARKERS.any { it in name.lowercase() }
-        val virtualId = sample.deviceId <= 0 || sample.isDeviceVirtual == true
-        if (!virtualId && !named) return null
-        val severe = named || sample.isDeviceVirtual == true && sample.deviceId != InputEventBits.DEVICE_ID_VIRTUAL_KEYBOARD
+    private fun deviceFinding(summary: String, sample: MotionSample): SignalFinding {
         return finding(
             signalId = "in.event.device",
             category = category,
-            severity = if (severe) Severity.HIGH else Severity.LOW,
-            confidence = if (severe) 0.88 else 0.45,
+            severity = Severity.HIGH,
+            confidence = 0.86,
             detected = true,
-            titleZh = "按键事件的设备来源",
-            summaryZh = if (severe) "按键来自具名虚拟设备或注入器。" else "按键来自系统软键盘使用的虚拟设备号。",
-            observedDataZh = keyMeasured(sample),
-            expectedBaselineZh = "物理键盘的 deviceId 为正数且 isVirtual=false。软键盘使用 VIRTUAL_KEYBOARD=-1 是正常的；uinput、scrcpy、adb 等名字则不是软键盘。",
-            recommendationZh = if (severe) {
-                "按键来源像注入设备，建议拒绝本次输入。"
-            } else {
-                "系统软键盘本身是虚拟设备。若没有其它注入特征，不必仅凭 deviceId=-1 阻断。"
-            },
-            rawEvidence = keyEvidence(sample),
+            titleZh = "事件对应的输入设备",
+            summaryZh = summary,
+            observedDataZh = shortMotion(sample),
+            expectedBaselineZh = BASELINE,
+            recommendationZh = ADVICE_CLUE,
+            rawEvidence = evidence(sample),
             sourceAttribution = Attribution.INPUT,
         )
     }
 
-    private fun isMechanicalLine(moves: List<MotionSample>): Boolean {
-        val start = moves.first()
-        val end = moves.last()
-        val dx = end.x - start.x
-        val dy = end.y - start.y
-        val length = sqrt(dx * dx + dy * dy)
-        if (length < 40f) return false
-        var maxDistance = 0.0
-        val steps = mutableListOf<Double>()
-        var previous = start
-        for (point in moves.drop(1)) {
-            val step = hypot(point.x - previous.x, point.y - previous.y)
-            steps += step
-            val distance = abs((point.x - start.x) * dy - (point.y - start.y) * dx) / length
-            if (distance > maxDistance) maxDistance = distance.toDouble()
-            previous = point
+    private fun isSoftKeyboard(sample: KeySample): Boolean {
+        if (matched(sample.deviceName, injectorNames) != null) return false
+        val keyboard = hasSource(sample.source, InputSourceBits.SOURCE_KEYBOARD) || sample.source == 0
+        return keyboard && (sample.deviceId == InputEventBits.DEVICE_ID_VIRTUAL_KEYBOARD || sample.isDeviceVirtual == true)
+    }
+
+    private fun guideGesture(current: MotionSample, gesture: List<MotionSample>): String {
+        if (gesture.any { it.pointerCount >= 2 } || current.pointerCount >= 2) return "多指"
+        if (!isSettled(current.action)) return ""
+        val start = gesture.first()
+        val distance = hypot(current.x - start.x, current.y - start.y)
+        val duration = current.eventTime - current.downTime
+        return when {
+            distance >= GUIDE_SWIPE_PX -> "滑动"
+            duration >= GUIDE_LONG_MS -> "长按"
+            else -> "点击"
         }
-        if (maxDistance > 0.5) return false
-        val mean = steps.average()
-        if (mean <= 0.0) return false
-        val variance = steps.sumOf { (it - mean) * (it - mean) } / steps.size
-        val cv = sqrt(variance) / mean
-        return cv < 0.02
     }
 
-    private fun mechanicalRhythm(downTimes: List<Long>): String? {
-        if (downTimes.size < 5) return null
-        val intervals = downTimes.zipWithNext { a, b -> (b - a).toDouble() }.filter { it in 15.0..500.0 }
-        if (intervals.size < 4) return null
-        val mean = intervals.average()
-        if (mean <= 0.0) return null
-        val variance = intervals.sumOf { (it - mean) * (it - mean) } / intervals.size
-        val cv = sqrt(variance) / mean
-        if (cv >= 0.03) return null
-        return "最近 ${intervals.size} 次按下间隔均值 ${mean.toInt()} 毫秒，变异系数 ${format(cv)}，呈机械等间隔"
+    private fun isSettled(action: Int): Boolean {
+        val masked = action and InputEventBits.ACTION_MASK
+        return masked == InputEventBits.ACTION_UP || masked == InputEventBits.ACTION_POINTER_UP
     }
 
-    private fun motionMeasured(sample: MotionSample): String {
-        return "deviceId=${sample.deviceId}，deviceName=${sample.deviceName ?: "（未知）"}，isVirtual=${sample.isDeviceVirtual}，" +
-            "source=${sourceName(sample.source)}，toolType=${toolName(sample.toolType)}，flags=0x${sample.flags.toString(16)}，" +
-            "pressure=${sample.pressure}，size=${sample.size}，touchMajor=${sample.touchMajor}，" +
-            "坐标=(${sample.x}, ${sample.y})，eventTime=${sample.eventTime}，downTime=${sample.downTime}。"
+    private fun capability(sample: MotionSample): String {
+        fun axis(label: String, available: Boolean?): String = when (available) {
+            null -> "${label}未知"
+            false -> "${label}不可用"
+            true -> "${label}可用"
+        }
+        return listOf(
+            axis("压力", sample.pressureAvailable),
+            axis("面积", sample.sizeAvailable),
+            axis("长轴", sample.touchMajorAvailable),
+            axis("短轴", sample.touchMinorAvailable),
+            "本次${sample.pointerCount}指",
+        ).joinToString("，")
     }
 
-    private fun keyMeasured(sample: KeySample): String {
-        return "keyCode=${sample.keyCode}，action=${sample.action}，deviceId=${sample.deviceId}，" +
-            "deviceName=${sample.deviceName ?: "（未知）"}，isVirtual=${sample.isDeviceVirtual}，" +
-            "source=${sourceName(sample.source)}，flags=0x${sample.flags.toString(16)}，" +
-            "eventTime=${sample.eventTime}，downTime=${sample.downTime}。"
+    private fun shortMotion(sample: MotionSample): String {
+        return "来源=${sourceName(sample.source)}，工具=${toolName(sample.toolType)}，" +
+            "设备=${sample.deviceName ?: "（未知）"}，isVirtual=${sample.isDeviceVirtual}，" +
+            "flags=0x${sample.flags.toString(16)}。"
     }
 
-    private fun motionEvidence(sample: MotionSample): Map<String, String> = mapOf(
+    private fun detailMotion(current: MotionSample, gesture: List<MotionSample>): String {
+        val duration = current.eventTime - current.downTime
+        return "deviceId=${current.deviceId}，deviceName=${current.deviceName ?: "（未知）"}，isVirtual=${current.isDeviceVirtual}，" +
+            "source=${sourceName(current.source)}，toolType=${toolName(current.toolType)}，flags=0x${current.flags.toString(16)}，" +
+            "pointerCount=${current.pointerCount}，historySize=${current.historySize}，" +
+            "pressure=${current.pressure}，size=${current.size}，touchMajor=${current.touchMajor}，touchMinor=${current.touchMinor}，" +
+            "点数=${gesture.size}，距按下=${duration}毫秒。设备不支持的轴是不可用，不是异常。"
+    }
+
+    private fun evidence(sample: MotionSample): Map<String, String> = mapOf(
         "deviceId" to sample.deviceId.toString(),
         "deviceName" to sample.deviceName.orEmpty(),
         "isVirtual" to sample.isDeviceVirtual.toString(),
         "source" to sample.source.toString(),
         "toolType" to sample.toolType.toString(),
         "flags" to sample.flags.toString(),
+        "pointerCount" to sample.pointerCount.toString(),
+        "historySize" to sample.historySize.toString(),
         "pressure" to sample.pressure.toString(),
+        "pressureAvailable" to sample.pressureAvailable.toString(),
         "size" to sample.size.toString(),
-        "touchMajor" to sample.touchMajor.toString(),
-        "x" to sample.x.toString(),
-        "y" to sample.y.toString(),
-        "eventTime" to sample.eventTime.toString(),
-        "downTime" to sample.downTime.toString(),
+        "sizeAvailable" to sample.sizeAvailable.toString(),
     )
 
-    private fun keyEvidence(sample: KeySample): Map<String, String> = mapOf(
-        "keyCode" to sample.keyCode.toString(),
-        "deviceId" to sample.deviceId.toString(),
-        "deviceName" to sample.deviceName.orEmpty(),
-        "isVirtual" to sample.isDeviceVirtual.toString(),
-        "source" to sample.source.toString(),
-        "flags" to sample.flags.toString(),
-    )
+    private fun matched(name: String?, markers: List<String>): String? {
+        val lower = name?.lowercase().orEmpty()
+        if (lower.isBlank()) return null
+        return markers.firstOrNull { it in lower }
+    }
 
-    private fun sourceName(source: Int): String = when (source) {
-        InputSourceBits.SOURCE_TOUCHSCREEN -> "TOUCHSCREEN"
-        InputSourceBits.SOURCE_MOUSE -> "MOUSE"
-        InputSourceBits.SOURCE_KEYBOARD -> "KEYBOARD"
-        InputSourceBits.SOURCE_STYLUS -> "STYLUS"
-        InputSourceBits.SOURCE_DPAD -> "DPAD"
-        InputSourceBits.SOURCE_ANY -> "ANY"
-        0 -> "0"
+    private fun hasSource(sources: Int, bit: Int): Boolean = sources and bit == bit
+
+    private fun sourceName(source: Int): String = when {
+        source == 0 -> "0"
+        source == InputSourceBits.SOURCE_ANY -> "ANY"
+        hasSource(source, InputSourceBits.SOURCE_TOUCHSCREEN) && hasSource(source, InputSourceBits.SOURCE_MOUSE) -> "TOUCHSCREEN|MOUSE"
+        hasSource(source, InputSourceBits.SOURCE_TOUCHSCREEN) -> "TOUCHSCREEN"
+        hasSource(source, InputSourceBits.SOURCE_MOUSE) -> "MOUSE"
+        hasSource(source, InputSourceBits.SOURCE_KEYBOARD) -> "KEYBOARD"
+        hasSource(source, InputSourceBits.SOURCE_STYLUS) -> "STYLUS"
         else -> "0x${source.toString(16)}"
     }
 
@@ -355,6 +487,4 @@ object InputEventAnalyzer {
     }
 
     private fun hypot(x: Float, y: Float): Double = sqrt((x * x + y * y).toDouble())
-
-    private fun format(value: Double): String = ((value * 1000).toInt() / 1000.0).toString()
 }
